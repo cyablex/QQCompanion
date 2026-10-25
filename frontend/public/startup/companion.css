@@ -1,0 +1,24 @@
+/* Extend the original scene for the live session; splash.css and its rings stay intact. */
+#dsh-startup-root .dsu-login-code[hidden],
+#dsh-startup-root .dsu-loading-controls[hidden],
+#dsh-startup-root .dsu-loading-controls button[hidden] { display:none; }
+.dsu-login-code { position:absolute; left:50%; top:45%; transform:translate(-50%,-50%); z-index:23; width:clamp(152px,18vw,224px); padding:8px; background:#fff; line-height:0; }
+.dsu-login-code img { display:block; width:100%; aspect-ratio:1; }
+.dsu-session-loading .dsu-center { inset:0; transform:none; display:block; }
+.dsu-session-loading .dsu-status { position:absolute; left:50%; top:45%; transform:translate(-50%,-50%); gap:0; line-height:1; }
+.dsu-session-loading .dsu-caret { display:none; }
+.dsu-session-loading .dsu-sub-en { position:absolute; left:50%; top:calc(45% + 32px); transform:translateX(-50%); margin-top:0; line-height:1; }
+.dsu-session-loading .dsu-rule { position:absolute; left:50%; top:calc(45% + 56px); transform:translateX(-50%); margin-top:0; }
+.dsu-session-loading .dsu-logo { display:none; }
+.dsu-has-qr .dsu-center { --login-offset:clamp(92px,10vw,132px); --login-title:clamp(20px,2.2vw,30px); }
+.dsu-has-qr .dsu-status.dsu-zhline { top:calc(45% + var(--login-offset)); transform:translateX(-50%); font-size:var(--login-title); letter-spacing:.16em; text-indent:.16em; }
+.dsu-has-qr .dsu-sub-en { top:calc(45% + var(--login-offset) + var(--login-title) + 10px); font-size:11px; letter-spacing:.3em; text-indent:.3em; }
+.dsu-has-qr .dsu-rule { top:calc(45% + var(--login-offset) + var(--login-title) + 35px); }
+.dsu-has-qr .dsu-bracket { opacity:0; }
+.dsu-loading-controls { position:absolute; left:0; right:0; bottom:110px; z-index:27; display:flex; justify-content:center; gap:28px; }
+#dsh-startup-root .dsu-loading-controls button { border:0; border-bottom:1px solid var(--dsu-hair); background:transparent; padding:7px 0; color:var(--dsu-ink-soft); font:12px var(--dsu-mono),var(--dsu-zh); letter-spacing:.1em; cursor:pointer; }
+#dsh-startup-root .dsu-loading-controls button:hover { color:var(--dsu-accent); border-color:var(--dsu-accent); }
+#dsh-startup-root .dsu-loading-controls button:disabled { opacity:.45; cursor:wait; }
+#dsh-startup-root .dsu-loading-controls button:focus-visible { outline:1px solid var(--dsu-accent); outline-offset:5px; }
+.dsu-session-loading .dsu-sub-zh { max-width:80vw; text-align:center; overflow-wrap:anywhere; }
+@media (max-height:730px) { .dsu-loading-controls { bottom:100px; }.dsu-session-loading .dsu-sub-zh { font-size:12px; } }

@@ -1,0 +1,23 @@
+{
+  "name": "大肥鱼",
+  "owner_title": "主人",
+  "owner_qq": "",
+  "bot_qq": "",
+  "persona": "自然、开朗，有自己的喜好和想法。依据实际记忆与活动交流，尊重不同联系人的隐私。",
+  "model_route": "official",
+  "model": "",
+  "live": false,
+  "paused": true,
+  "revision": 1,
+  "guests": false,
+  "voice_replies": false,
+  "singing_enabled": false,
+  "autonomous_drawing": false,
+  "autonomous_profile": false,
+  "autonomous_posts": false,
+  "proactive": false,
+  "friend_proactive": false,
+  "qzone": false,
+  "daily_cny": 3.0,
+  "monthly_cny": 60.0
+}

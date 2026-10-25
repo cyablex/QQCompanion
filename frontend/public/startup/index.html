@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>大肥鱼 · 开场</title>
+  <link rel="stylesheet" href="./splash.css">
+  <link rel="stylesheet" href="./companion.css">
+  <style>
+    html,body { margin:0; width:100%; height:100%; overflow:hidden; background:#000; }
+    .opening-label { position:fixed; left:24px; bottom:12px; z-index:2147483100; font:10px 'Microsoft YaHei',sans-serif; color:#818181; pointer-events:none; }
+    #dsh-startup-root .dsu-skip { display:none !important; }
+  </style>
+  <script>
+    // The visual runtime has a small pre-welcome readiness hook.
+    const gated = new URLSearchParams(location.search).get('gate') === '1';
+    let backendReady = false;
+    let releaseReady;
+    if (gated) {
+      window.__DAFEIYU_WAIT_READY__ = function () {
+        parent.postMessage({type:'dafeiyu-startup:waiting'}, '*');
+        return backendReady ? Promise.resolve() : new Promise(resolve => { releaseReady = resolve; });
+      };
+      document.addEventListener('keydown', function (event) {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        parent.postMessage({type:'dafeiyu-startup:skip'}, '*');
+      }, true);
+    }
+    window.__DSH_STARTUP_SCRIPT_URL__ = './splash.js';
+    window.__DSH_STARTUP__ = {
+      enabled:true, mode:'always', theme:'light', speed:1,
+      requireInteraction:true, allowSkip:true,
+      voice:false, sound:false, voiceCue:false, voiceSource:'tts', sfx:'synth',
+      identity:'本机用户', identityId:'0001', accessLevel:'OWNER',
+      brand1:'DAFEIYU', brand2:'GOOD DAYS, GOOD COMPANY',
+      brand3a:'COMPANION', brand3b:'OS',
+      orgZh:'大肥鱼', orgEn:'DAFEIYU', orgSub:'DAFEIYU COMPANION',
+      welcomeBox:'DAFEIYU COMPANION', footer:'DAFEIYU · DESKTOP CONSOLE',
+      accent:'#4d6bfe', glitchA:'#ff3b30', glitchB:'#2971b8'
+    };
+    window.addEventListener('dsh-startup:done', function () {
+      parent.postMessage({type:'dafeiyu-startup:done'}, '*');
+    });
+    window.addEventListener('message', function (event) {
+      if (event.source !== parent) return;
+      if (event.data?.type === 'dafeiyu-startup:state') {
+        window.__DAFEIYU_STARTUP_STATE__ = event.data;
+        backendReady = event.data.ready === true;
+        if (window.__DAFEIYU_RENDER_LOADING__) window.__DAFEIYU_RENDER_LOADING__();
+        if (backendReady && releaseReady) releaseReady();
+        return;
+      }
+      if (event.data?.type === 'dafeiyu-startup:load') {
+        if (gated) window.__DSH_STARTUP_API__?.load();
+        return;
+      }
+      if (event.data?.type !== 'dafeiyu-startup:key') return;
+      if (!['Escape','Enter',' '].includes(event.data.key)) return;
+      document.dispatchEvent(new KeyboardEvent('keydown', {key:event.data.key, bubbles:true}));
+    });
+    window.addEventListener('error', function () {
+      parent.postMessage({type:'dafeiyu-startup:failed'}, '*');
+    });
+    document.addEventListener('DOMContentLoaded', function () {
+      const meta = document.querySelector('.dsu-meta-1');
+      if (meta) meta.textContent = 'V4.33 · DESKTOP CONSOLE';
+    });
+  </script>
+  <script defer src="./splash.js" onerror="parent.postMessage({type:'dafeiyu-startup:failed'}, '*')"></script>
+</head>
+<body><span class="opening-label">DAFEIYU · DESKTOP CONSOLE</span></body>
+</html>

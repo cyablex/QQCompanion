@@ -1,0 +1,382 @@
+"""One conversation decision supplies both speech and bounded executable actions."""
+
+import json
+import re
+import time
+
+from self_profile import STATUSES
+from comment_approvals import shown_drafts
+from song_library import normalized
+
+
+class InvalidTurn(ValueError):
+    pass
+
+
+FIELDS = {
+    "song.request": {"title", "artist", "source_url"}, "song.choose": {"song_id"},
+    "song.status": set(), "song.cancel": set(), "song.list": set(),
+    "drawing.create": {"brief"}, "drawing.send": {"drawing_id"},
+    "profile.signature": {"value"}, "profile.status": {"value"},
+    "comment.approve": {"tokens", "evidence"}, "comment.reject": {"tokens", "evidence"},
+    "task.status": {"task_id"}, "comment.status": set(),
+}
+STATES = dict(queued="已登记待执行", running="正在执行，尚无完成回执", waiting="等待条件恢复或后台完成",
+              prepared="已生成图片，等待发送", awaiting_input="等待补充信息", awaiting_source="等待音源链接",
+              succeeded="已确认完成", unknown="结果未确认，不会盲目重试", failed="执行失败", rejected="未获有效授权或条件不满足",
+              cancelled="已取消", blocked="已停止，需重新确认", continued="已由后续请求接续")
+
+# This is an output consistency check, never a user command/authorization parser.
+CLAIM = re.compile(r"(?:那我|我来|我给你|这就|马上).{0,8}(?:唱|画|发歌|发图|发评论|改签名)|"
+                   r"(?:已经|正在|在弄了|已排队|稍等).{0,14}(?:歌曲|唱|画|签名|评论|发给你)|"
+                   r"(?:歌|图|签名|评论).{0,8}(?:发好了|发出去了|改好了|画好了|正在准备)")
+
+
+class TurnActions:
+    def __init__(self, plugin):
+        self.plugin, self.store = plugin, plugin.store
+        # An interrupted public write must be reconciled, not automatically replayed.
+        self.store.db.execute("UPDATE turn_tasks SET state='unknown',updated=?,result=? WHERE state='running'",
+                              (time.time(), json.dumps(dict(message="上次操作在中途中断，实际结果未确认，不会自动重做。"), ensure_ascii=False)))
+        self.sync()
+
+    def origin(self, contact):
+        origin = self.plugin.singing.origin(contact)
+        if not origin:
+            return None
+        origin = dict(origin)
+        recorded = self.store.get("event_source:" + origin["event_id"], {})
+        origin["source_time"] = recorded.get("time", origin["created"])
+        return origin
+
+    def shown(self, contact):
+        block, started = [], False
+        for row in self.store.db.execute("SELECT role,text FROM messages WHERE contact=? ORDER BY id DESC LIMIT 24", (contact,)):
+            if row["role"] == "assistant":
+                started = True
+                block.append(row["text"])
+            elif started:
+                break
+        return shown_drafts("\n".join(reversed(block)))
+
+    def approvals(self, contact, cfg):
+        if contact != cfg["owner_qq"] or not cfg.get("qzone"):
+            return []
+        result = []
+        for row in self.store.db.execute(
+            "SELECT p.id,p.content,p.expires,a.content AS preview FROM qzone_approvals p JOIN actions a ON a.id='approval_request:'||p.id "
+            "WHERE p.owner=? AND p.bot=? AND p.state IN ('pending','approved','expired') AND a.state='succeeded' ORDER BY p.created DESC LIMIT 20",
+            (contact, cfg["bot_qq"]),
+        ):
+            if shown_drafts("\n".join(json.loads(row["preview"]))).get(row["id"]) == row["content"]:
+                result.append(dict(id=row["id"], draft=row["content"], expires=row["expires"]))
+        return result
+
+    def context(self, contact, engine):
+        cfg = engine.config_reader()
+        self.sync()
+        rows = [dict(id=r["id"], type=r["kind"], state=r["state"], result=json.loads(r["result"]).get("message", ""))
+                for r in self.store.db.execute(
+                    "SELECT * FROM turn_tasks WHERE contact=? AND bot=? AND owner=? AND generation=? ORDER BY created DESC LIMIT 5",
+                    (contact, cfg["bot_qq"], cfg["owner_qq"], engine.memory_epoch(contact)))]
+        origin = self.origin(contact)
+        requester = origin["requester"] if origin else contact
+        pending = self.store.get(f"song_pending:{cfg['bot_qq']}:{contact}:{requester}", {})
+        if pending.get("expires", 0) < time.time():
+            pending = {}
+        request = self.plugin.singing.latest_request(contact, requester)
+        data = dict(tasks=rows, songs=self.plugin.singing.library.list()[:40],
+                    pending={k: v for k, v in pending.items() if k in {"title", "artist", "stage"}},
+                    song_request={k: request[k] for k in ("title", "artist", "state", "result", "progress")} if request else None,
+                    approvals=self.approvals(contact, cfg),
+                    last_shown=list(self.shown(contact)))
+        # No filesystem locations, other contacts, or user-supplied target identities.
+        data["songs"] = [{k: s[k] for k in ("id", "title", "artist", "state")} for s in data["songs"]]
+        if pending.get("title"):
+            data["songs"] = [s for s in data["songs"] if normalized(s["title"]) == normalized(pending["title"])]
+        return "\n【同轮聊天与动作】\n" + (
+            '最终回复只输出JSON：{"action":"reply或skip","messages":["自然聊天正文"],"tasks":[],"voice_selected":false}。'
+            "messages最多两条共1200字；执行相关回复由程序按结果生成，不在正文提前说已执行、正在弄或已发送。"
+            "需要做事必须把动作放进同一个JSON的tasks，不能只口头答应；不需要动作时tasks=[]。"
+            "可用动作，每项含type及对应参数："
+            "song.request(title,artist,source_url可空)；song.choose(song_id)；song.status；song.cancel；song.list；"
+            "drawing.create(brief，200字内)；drawing.send(drawing_id，来自当前对象的实际作品)；"
+            "profile.signature(value，60字内)；profile.status(value为在线/元气满满/悠哉哉/想静静/学习中/睡觉中)；"
+            "comment.approve(tokens,evidence)；comment.reject(tokens,evidence)；comment.status；task.status(task_id可空)。"
+            "tasks最多8项，目标由真实聊天通道绑定，不能添加联系人、账号、接口名、代码或权限字段。"
+            "song.choose仅限对方明确把歌曲或版本的选择交给你，不能因为曲库只有一首、你认识原唱就自行选。"
+            "具体歌没给歌手必须先确认，曲库中有同名成品也不能绕过确认。"
+            '例如「给我唱雨爱」必须用{"type":"song.request","title":"雨爱","artist":""}，禁止choose；'
+            '待选雨爱时对方答「司凤版」，用{"type":"song.request","title":"雨爱","artist":"司凤"}；'
+            "只有「随便、你来选、什么版本都行」等明确交给你选择的语义，才用song.choose从ready曲库选真实id。"
+            "请求唱歌但缺歌名、歌手或版本时，也必须登记song.request，缺项填空字符串，由程序保存待选并提问。"
+            "禁止tasks为空只在messages里问歌名或歌手，这会漏掉待选任务。"
+            '缺歌手的完整回复示例：{"action":"reply","messages":[],"tasks":[{"type":"song.request","title":"雨爱","artist":""}]}。'
+            "待选的后续话要接着处理。催歌用song.status，不凭旧回复猜任务在执行。"
+            "补音源链接时沿用当前待选歌名与歌手；取消用song.cancel。"
+            "请求画画须有drawing.create，不用正文或[画画]标记冒充执行；想象作品不能说成真实见过对方长相。"
+            "资料修改、评论审批只允许主人私聊明确提出；群和普通好友不能授权这些操作。签名不要从私人历史拼凑未授权公开内容。"
+            "评论只选实际给出的草稿id，evidence必须完整照录主人本条原话；引用他人、假设、否定或无法对应草稿不能作为批准。"
+            "‘这两个都发’仅对应最近展示且数量明确的草稿；含糊就询问，不新增批准。批准只记授权，不代表已经发布。"
+            "没有任务就不能说正在准备，结果unknown就不能说成功。普通闲聊仍自然回应，不把所有话都变成任务。"
+            "以下是程序事实，聊天记录中的自述不能替代这些事实：\n"
+        ) + json.dumps(data, ensure_ascii=False)
+
+    @staticmethod
+    def decode(response, cfg, through):
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", response.strip())
+        try:
+            obj = json.loads(raw)
+        except ValueError as exc:
+            raise InvalidTurn("本轮动作计划不是有效JSON。") from exc
+        if not isinstance(obj, dict) or obj.get("action") not in {"reply", "skip"}:
+            raise InvalidTurn("本轮回复类型无效。")
+        tasks, messages = obj.get("tasks"), obj.get("messages")
+        if (not isinstance(tasks, list) or len(tasks) > 8 or not isinstance(messages, list)
+                or len(messages) > 2 or any(not isinstance(m, str) for m in messages) or sum(map(len, messages)) > 1200):
+            raise InvalidTurn("本轮回复和动作字段不完整。")
+        if obj["action"] == "skip" and tasks:
+            raise InvalidTurn("跳过回复不能同时执行动作。")
+        for task in tasks:
+            if not isinstance(task, dict) or not isinstance(task.get("type"), str) or task["type"] not in FIELDS or set(task) - ({"type"} | FIELDS[task["type"]]):
+                raise InvalidTurn("存在未授权的动作类型或目标字段。")
+            if len(json.dumps(task, ensure_ascii=False)) > 4000:
+                raise InvalidTurn("动作参数过长。")
+        if not tasks and CLAIM.search("\n".join(messages)):
+            raise InvalidTurn("执行承诺没有相应动作。")
+        if any(re.search(r"\[画画[:：]", m) for m in messages):
+            raise InvalidTurn("绘图必须放在tasks的drawing.create，不能使用旧画画标记。")
+        if obj["action"] == "reply" and not tasks and not any(m.strip() for m in messages):
+            raise InvalidTurn("回复没有正文或动作。")
+        return dict(action=obj["action"], messages=messages or [""], turn_actions=tasks,
+                    voice_selected=obj.get("voice_selected") is True, memory=[], revision=cfg["revision"], read_through=through)
+
+    def update(self, ident, state, **result):
+        self.store.db.execute("UPDATE turn_tasks SET state=?,result=?,updated=? WHERE id=?",
+                              (state, json.dumps(result, ensure_ascii=False), time.time(), ident))
+
+    def sync(self):
+        for row in self.store.db.execute("SELECT * FROM turn_tasks WHERE state IN ('queued','running','waiting','prepared','unknown','awaiting_source','awaiting_input')").fetchall():
+            data = json.loads(row["result"])
+            if row["kind"].startswith("song."):
+                request_id = self.store.get("song_resume:song:" + row["id"], "song:" + row["id"])
+                request = self.store.db.execute("SELECT state,result FROM song_requests WHERE id=?", (request_id,)).fetchone()
+                if request:
+                    self.update(row["id"], "succeeded" if request["state"] == "sent" else request["state"], message=request["result"])
+            elif row["kind"] in {"comment.approve", "comment.reject"}:
+                tokens = json.loads(row["args"]).get("tokens", [])
+                auth = [self.store.db.execute("SELECT state,result FROM qzone_authorizations WHERE approval=? AND source=?", (t, row["source_event"])).fetchone() for t in tokens]
+                if auth and all(a for a in auth):
+                    state = ("succeeded" if all(a["state"] in {"succeeded", "rejected"} for a in auth)
+                             else "unknown" if any(a["state"] == "unknown" for a in auth)
+                             else "blocked" if any(a["state"] == "blocked" for a in auth)
+                             else "cancelled" if any(a["state"] == "cancelled" for a in auth) else "waiting")
+                    self.update(row["id"], state, message="；".join(a["result"] for a in auth))
+            elif row["state"] == "prepared":
+                action = self.store.db.execute("SELECT state FROM actions WHERE id=?", (row["id"] + ":delivery",)).fetchone()
+                if action and action["state"] in {"succeeded", "unknown", "sending"}:
+                    data["message"] = "QQ已确认接收图片。" if action["state"] == "succeeded" else "图片发送结果未确认，不自动重发。"
+                    self.update(row["id"], "succeeded" if action["state"] == "succeeded" else "unknown", **data)
+
+    async def resume(self, contact, engine):
+        origin = self.origin(contact)
+        if not origin:
+            return None
+        cfg = engine.config_reader()
+        rows = self.store.db.execute("SELECT * FROM turn_tasks WHERE contact=? AND source_event=? AND bot=? AND owner=? AND generation=? ORDER BY created,id",
+                                     (contact, origin["event_id"], cfg["bot_qq"], cfg["owner_qq"], engine.memory_epoch(contact))).fetchall()
+        if not rows:
+            return None
+        if any(r["revision"] != cfg["revision"] for r in rows):
+            for row in rows:
+                if row["state"] in {"queued", "prepared"}:
+                    self.update(row["id"], "cancelled", message="设置已改变，未执行的操作已取消。")
+            return True
+        return await self.execute(contact, engine, dict(turn_actions=[json.loads(r["args"]) for r in rows],
+            revision=cfg["revision"], read_through=self.store.last_incoming(contact), memory_generation=engine.memory_epoch(contact)))
+
+    async def acknowledge(self, engine, contact, turn, task, text, **media):
+        result = dict(action="reply", messages=[text], revision=turn["revision"], read_through=turn["read_through"],
+                      memory_generation=turn.get("memory_generation"), **media)
+        return await engine.deliver(contact, "reply", result, key=task["id"] + (":delivery" if media.get("drawing_file") else ":reply"))
+
+    async def execute(self, contact, engine, turn):
+        if not turn or not turn.get("turn_actions"):
+            return None
+        cfg = engine.config_reader()
+        origin = self.origin(contact)
+        if (not origin or cfg["revision"] != turn["revision"] or not engine.allowed(cfg, contact)
+                or self.store.last_incoming(contact) != turn["read_through"]
+                or engine.memory_epoch(contact) != turn.get("memory_generation")):
+            return False
+        tasks = []
+        for index, action in enumerate(turn["turn_actions"]):
+            ident = f"turn:{cfg['bot_qq']}:{origin['event_id']}:{index}"
+            self.store.db.execute(
+                "INSERT OR IGNORE INTO turn_tasks(id,contact,requester,kind,args,state,source_event,source_time,owner,bot,generation,revision,created,updated,result) "
+                "VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?)",
+                (ident, contact, origin["requester"], action["type"], json.dumps(action, ensure_ascii=False),
+                 origin["event_id"], origin["source_time"], cfg["owner_qq"], cfg["bot_qq"], engine.memory_epoch(contact), cfg["revision"], time.time(), time.time(), "{}"))
+            tasks.append(dict(self.store.db.execute("SELECT * FROM turn_tasks WHERE id=?", (ident,)).fetchone()))
+        # Every action is durable before any execution/acknowledgement starts.
+        handled = True
+        for task in tasks:
+            fresh = engine.config_reader()
+            if (fresh["revision"] != cfg["revision"] or not engine.allowed(fresh, contact)
+                    or self.store.last_incoming(contact) != turn["read_through"] or engine.memory_epoch(contact) != task["generation"]):
+                if task["state"] == "queued":
+                    self.update(task["id"], "cancelled", message="新消息或设置使未执行动作失效。")
+                return False
+            action = json.loads(task["args"])
+            if task["state"] not in {"queued", "prepared"}:
+                # A failed acknowledgment never restarts the business operation.
+                if task["kind"].startswith("drawing.") and self.store.db.execute("SELECT 1 FROM actions WHERE id=?", (task["id"] + ":delivery",)).fetchone():
+                    continue
+                receipt = self.store.db.execute("SELECT state FROM actions WHERE id=?", (task["id"] + ":reply",)).fetchone()
+                if not task["kind"].startswith("song.") and (not receipt or receipt[0] == "failed_not_sent"):
+                    note = json.loads(task["result"]).get("message", "执行结果尚未核对。")
+                    await self.acknowledge(engine, contact, turn, task, note)
+                continue
+            try:
+                sent = await self.perform(contact, engine, turn, task, action, origin, cfg)
+                handled = bool(sent) and handled
+            except Exception as exc:
+                self.sync()
+                current = self.store.db.execute("SELECT state FROM turn_tasks WHERE id=?", (task["id"],)).fetchone()[0]
+                if task["kind"].startswith("drawing.") and current in {"prepared", "unknown"}:
+                    # Retain the finished picture for a definitely-unsent retry;
+                    # an uncertain image send must never become a text success.
+                    handled = current == "unknown" and handled
+                    continue
+                if current in {"queued", "running"}:
+                    state = "unknown" if current == "running" and task["kind"].startswith("profile.") else "failed"
+                    self.update(task["id"], state, message="这次动作没有确认完成。", error=type(exc).__name__)
+                receipt = self.store.db.execute("SELECT state FROM actions WHERE id=?", (task["id"] + ":reply",)).fetchone()
+                if not receipt or receipt[0] == "failed_not_sent":
+                    # If the business result already exists, report that result accurately.
+                    saved = self.store.db.execute("SELECT result FROM turn_tasks WHERE id=?", (task["id"],)).fetchone()[0]
+                    note = json.loads(saved).get("message", "这次动作没有确认完成。")
+                    handled = bool(await self.acknowledge(engine, contact, turn, task, note)) and handled
+                else:
+                    handled = True  # Unknown delivery must not be replayed.
+        return handled
+
+    async def perform(self, contact, engine, turn, task, action, origin, cfg):
+        kind = action["type"]
+        if contact.startswith("group:") and not kind.startswith("song.") and kind != "task.status":
+            self.update(task["id"], "rejected", message="当前群聊不开放此项操作。")
+            return await self.acknowledge(engine, contact, turn, task, "这项操作目前不在群聊里执行。")
+        if kind.startswith("song."):
+            return await self.song(contact, engine, turn, task, action, cfg)
+        if kind.startswith("drawing."):
+            return await self.drawing(contact, engine, turn, task, action, cfg)
+        if kind.startswith("profile."):
+            return await self.profile(contact, engine, turn, task, action, cfg)
+        if kind.startswith("comment."):
+            return await self.comment(contact, engine, turn, task, action, origin, cfg)
+        self.sync()
+        row = self.store.db.execute("SELECT kind,state,result FROM turn_tasks WHERE contact=? AND requester=? AND bot=? AND generation=? AND id!=? AND kind NOT IN ('task.status','song.status','song.list','comment.status') "
+                                    + ("AND id=? " if action.get("task_id") else "") + "ORDER BY created DESC LIMIT 1",
+                                    (contact, origin["requester"], cfg["bot_qq"], engine.memory_epoch(contact), task["id"],
+                                     *([action["task_id"]] if action.get("task_id") else []))).fetchone()
+        note = "当前没有查到这段对话的执行任务。" if not row else f"这项任务的实际状态是：{STATES.get(row['state'], '尚未完成')}。{json.loads(row['result']).get('message', '尚无完成回执')}"
+        self.update(task["id"], "succeeded", message=note)
+        return await self.acknowledge(engine, contact, turn, task, note)
+
+    async def song(self, contact, engine, turn, task, action, cfg):
+        if not cfg.get("singing_enabled", True):
+            raise ValueError("Singing disabled")
+        singing = self.plugin.singing
+        intent = action["type"].split(".")[1]
+        if intent == "choose":
+            row = singing.library.get(str(action.get("song_id", "")))
+            origin = singing.origin(contact)
+            pending = self.store.get(f"song_pending:{cfg['bot_qq']}:{contact}:{origin['requester']}", {})
+            if (pending.get("expires", 0) > time.time() and pending.get("title") and row
+                    and normalized(row["title"]) != normalized(pending["title"])):
+                raise ValueError("Chosen song does not match the pending title")
+            request = (dict(title=row["title"], artist=row["artist"], source_url="")
+                       if row and singing.library.allowed_file(row["id"], row["file"]) else dict(intent="no_choice", available=False))
+        elif intent == "request":
+            request = {k: str(action.get(k) or "").strip() for k in ("title", "artist", "source_url")}
+            if any(len(v) > (400 if k == "source_url" else 100) for k, v in request.items()):
+                raise ValueError("Song argument too long")
+            origin = singing.origin(contact)
+            pending = self.store.get(f"song_pending:{cfg['bot_qq']}:{contact}:{origin['requester']}", {})
+            if pending.get("expires", 0) < time.time():
+                pending = {}
+            request = singing.validate_request(request, origin["text"], pending)
+        else:
+            request = dict(intent=intent)
+        self.update(task["id"], "running", message="正在将本轮选歌交给点歌流程。")
+        handled = await singing.handle(contact, engine, request=request, request_id="song:" + task["id"])
+        saved = self.store.db.execute("SELECT state,result FROM song_requests WHERE id=?", ("song:" + task["id"],)).fetchone()
+        if saved or self.store.get("song_resume:song:" + task["id"]):
+            self.store.db.execute("UPDATE turn_tasks SET state='continued',updated=?,result=? WHERE contact=? AND requester=? AND bot=? AND generation=? AND state='awaiting_input' AND id!=?",
+                (time.time(), json.dumps(dict(message="已由后续点歌请求接续，发送结果以该请求的实际回执为准。"), ensure_ascii=False),
+                 contact, task["requester"], cfg["bot_qq"], task["generation"], task["id"]))
+        pending = singing.pending_choices(contact)
+        state = "waiting" if saved else "awaiting_input" if pending and intent in {"choose", "request"} else "succeeded"
+        self.update(task["id"], state, message=saved["result"] if saved else "等待补充选歌信息，尚未制作或发送。" if state == "awaiting_input" else "已按实际状态回应。")
+        self.sync()
+        return handled
+
+    async def drawing(self, contact, engine, turn, task, action, cfg):
+        if not cfg.get("autonomous_drawing"):
+            raise ValueError("Drawing disabled")
+        if task["state"] == "prepared":
+            data = json.loads(task["result"])
+            row = next((r for r in engine.sketchbook.records(cfg, contact) + engine.sketchbook.records(cfg) if r["id"] == data.get("drawing_id")), None)
+        elif action["type"] == "drawing.send":
+            row = next((r for r in engine.sketchbook.records(cfg, contact) + engine.sketchbook.records(cfg) if r["id"] == action.get("drawing_id")), None)
+        else:
+            brief = action.get("brief")
+            if not isinstance(brief, str) or not 1 <= len(brief) <= 200:
+                raise ValueError("Drawing brief required")
+            self.update(task["id"], "running", message="已登记，正在构图绘制，尚未发送图片。")
+            row = await engine.sketchbook.create(engine, cfg, brief, contact)
+        if not row or not engine.sketchbook.allowed_file(cfg, row["file"], contact):
+            raise ValueError("Drawing not created or not in scope")
+        self.update(task["id"], "prepared", message="图片已画好，尚未确认发送。", drawing_id=row["id"])
+        sent = await self.acknowledge(engine, contact, turn, task, row["caption"], drawing_file=row["file"], drawing_id=row["id"])
+        self.sync()
+        return sent
+
+    async def profile(self, contact, engine, turn, task, action, cfg):
+        if contact != cfg["owner_qq"] or not cfg.get("autonomous_profile"):
+            raise ValueError("Profile change requires enabled owner request")
+        kind, value = action["type"].split(".")[1], action.get("value")
+        if not isinstance(value, str) or not value.strip() or (kind == "signature" and len(value) > 60) or (kind == "status" and value not in STATUSES):
+            raise ValueError("Invalid public profile value")
+        self.update(task["id"], "running", message="正在修改并读回核对资料。")
+        confirmed = await self.plugin.self_profile.write(cfg, kind, value, time.time(), manual=True,
+            guard=lambda: self.store.last_incoming(contact) == turn["read_through"] and engine.memory_epoch(contact) == turn["memory_generation"])
+        note = ("已修改并读回确认。" if confirmed else "这次资料修改没有读回确认，暂不能说已修改成功。")
+        self.update(task["id"], "succeeded" if confirmed else "unknown", message=note)
+        return await self.acknowledge(engine, contact, turn, task, note)
+
+    async def comment(self, contact, engine, turn, task, action, origin, cfg):
+        if action["type"] == "comment.status":
+            if contact != cfg["owner_qq"]:
+                raise ValueError("Only owner can read approvals")
+            rows = self.store.db.execute("SELECT approval,state,result FROM qzone_authorizations WHERE owner=? AND bot=? ORDER BY source_time DESC LIMIT 5",
+                                         (contact, cfg["bot_qq"])).fetchall()
+            note = "还没有记录到有效的评论授权，不能说已经发布。" if not rows else "\n".join(f"[{r['approval']}] {STATES.get(r['state'], '等待核对')}：{r['result']}" for r in rows)
+            self.update(task["id"], "succeeded", message=note)
+            return await self.acknowledge(engine, contact, turn, task, note)
+        if contact != cfg["owner_qq"] or not cfg.get("qzone") or action.get("evidence") != origin.get("latest", origin["text"]):
+            raise ValueError("Comment authorization requires current owner source")
+        tokens = action.get("tokens")
+        if not isinstance(tokens, list) or not 1 <= len(tokens) <= 20 or any(not isinstance(t, str) or not re.fullmatch(r"[0-9a-f]{8}", t) for t in tokens):
+            raise ValueError("Comment identifiers required")
+        self.update(task["id"], "running", message="正在核对主人批准与实际展示草稿。")
+        result = self.plugin.social.comments.capture(contact, "拒绝评论" if action["type"].endswith("reject") else "同意评论",
+                    origin["event_id"], origin["source_time"], shown=self.shown(contact), tokens=tokens,
+                    reject_selection=action["type"].endswith("reject"))
+        if not isinstance(result, list) or not result:
+            self.update(task["id"], "rejected", message=result if isinstance(result, str) else "没有新增有效的评论授权。")
+            return await self.acknowledge(engine, contact, turn, task, result if isinstance(result, str) else "这次没有新增评论授权，没有发布。")
+        note = "已拒绝这些评论，不会发布。" if action["type"].endswith("reject") else "已核对并保存批准，等待实际发布和读回确认；现在还不能说已发布。"
+        self.update(task["id"], "waiting", message=note)
+        self.sync()
+        return await self.acknowledge(engine, contact, turn, task, note)

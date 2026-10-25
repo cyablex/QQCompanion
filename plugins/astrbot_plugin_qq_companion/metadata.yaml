@@ -1,0 +1,5 @@
+name: astrbot_plugin_qq_companion
+display_name: QQ 小号社交管理
+desc: Single-persona private chat, scoped memory, proactive contact and delivery receipts.
+version: v0.1.0
+author: Local

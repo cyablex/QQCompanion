@@ -1,0 +1,101 @@
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import AppIcon from './components/AppIcon.vue'
+import WindowTitleBar from './components/WindowTitleBar.vue'
+import StartupScreen from './components/StartupScreen.vue'
+import OverviewPage from './pages/OverviewPage.vue'
+import SettingsPage from './pages/SettingsPage.vue'
+import ConnectionsPage from './pages/ConnectionsPage.vue'
+import SongbookPage from './pages/SongbookPage.vue'
+import GalleryPage from './pages/GalleryPage.vue'
+import { useCompanion } from './composables/useCompanion'
+import { call } from './services/api'
+
+const page = ref('home')
+const opening = ref(true)
+const entered = ref(false)
+const bootStarting = ref(true)
+const bootError = ref('')
+watch(page, value => {
+  document.querySelector('.main-area')?.scrollTo(0, 0)
+  if (value === 'home' && !entered.value) opening.value = true
+}, { flush: 'post' })
+const nav = [{ id: 'home', label: '总览', icon: 'home', en: 'OVERVIEW' }, { id: 'songbook', label: '曲库', icon: 'music', en: 'SONGBOOK' }, { id: 'gallery', label: '画册', icon: 'gallery', en: 'GALLERY' }, { id: 'settings', label: '偏好设置', icon: 'settings', en: 'PREFERENCES' }, { id: 'connection', label: '模型连接', icon: 'connection', en: 'CONNECTIONS' }]
+const { status, connected, busy, error, notice, connect, refresh } = useCompanion()
+const startupReady = computed(() => !bootStarting.value && !bootError.value && !!status.value?.startup_ready && ['ready', 'paused'].includes(status.value.phase))
+async function startBackend() {
+  bootStarting.value = true; bootError.value = ''
+  try {
+    if (!connected.value) await connect()
+    if (!connected.value) throw new Error('请从桌面“大肥鱼控制台”打开。')
+    await call('control', 'start')
+    await refresh()
+  } catch (e) { bootError.value = (e as Error).message }
+  finally { bootStarting.value = false }
+}
+function retryStartup() { if (!bootStarting.value) { opening.value = true; void startBackend() } }
+function startupSettings() { page.value = 'settings'; opening.value = false }
+async function openLogin() {
+  try { await call('open_login_page') }
+  catch (e) { bootError.value = (e as Error).message }
+}
+let timer: ReturnType<typeof setInterval>
+let welcomeAudio: HTMLAudioElement | null = null
+let welcomeSource = ''
+const welcomePending = ref(false)
+async function playWelcome() {
+  try {
+    if (!welcomeSource) welcomeSource = await call<string>('voice_preview', 'welcome')
+    welcomeAudio?.pause()
+    welcomeAudio = new Audio(welcomeSource)
+    await welcomeAudio.play()
+    welcomePending.value = false
+  } catch { welcomePending.value = true }
+}
+async function finishOpening(welcome: boolean) {
+  if (!entered.value && !startupReady.value) return
+  if (!entered.value) page.value = 'home'
+  entered.value = true
+  opening.value = false
+  if (!welcome) return
+  try {
+    if ((await call<{ enabled: boolean }>('get_startup_welcome')).enabled) await playWelcome()
+  } catch { /* A missing native bridge must not block entry. */ }
+}
+watch(opening, value => { if (value) { welcomeAudio?.pause(); welcomePending.value = false } })
+onMounted(async () => {
+  await startBackend()
+  timer = setInterval(() => { if (connected.value && !busy.value && !document.hidden) void refresh() }, 2000)
+})
+onUnmounted(() => { clearInterval(timer); welcomeAudio?.pause() })
+</script>
+<template>
+  <div class="app-shell">
+    <WindowTitleBar />
+    <StartupScreen v-if="opening" :startup="!entered" :ready="startupReady" :starting="bootStarting" :error="bootError || error" :status="status" @done="finishOpening" @retry="retryStartup" @settings="startupSettings" @login="openLogin" />
+    <div :inert="opening">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">𓆝</div><div><strong>大肥鱼</strong><span>一点陪伴，一点日常</span></div></div>
+      <div class="nav-label">你的控制台</div>
+      <nav aria-label="主导航"><button v-for="item in nav" :key="item.id" :class="{ active: page === item.id }" @click="page = item.id"><AppIcon :name="item.icon" /><span>{{ item.label }}</span><span v-if="page === item.id" class="nav-dot" /></button></nav>
+      <div class="sidebar-bottom"><button class="opening-replay" @click="opening = true">重播开场 <span>↗</span></button><div class="local-badge"><span class="dot" />本机运行</div><p>把复杂留在后台，<br />把日常留给大肥鱼。</p><span class="version">{{ status?.version || 'V4.45' }} · 天蓝桌面</span></div>
+    </aside>
+    <main class="main-area">
+      <header class="topbar"><span>{{ nav.find(n => n.id === page)?.en }}</span><div><span class="small muted">独立桌面控制台</span><span class="top-divider" /><span class="small"><span class="dot" :class="{ amber: !status?.connected }" />{{ status?.connected ? 'QQ 已连接' : status?.phase === 'stopped' ? '后台已停止' : connected ? '正在检查连接' : '连接控制台中' }}</span></div></header>
+      <div class="page-content">
+        <div v-if="!entered && !opening" class="alert warning"><span>修改设置后，继续检查聊天连接。</span><button class="text-button" :disabled="busy || bootStarting" @click="retryStartup">返回启动加载</button></div>
+        <button v-if="welcomePending" class="button quiet" @click="playWelcome">播放大肥鱼的欢迎语 ♫</button>
+        <div v-if="entered && ['unavailable', 'singing'].includes(status?.voice?.state || '')" class="alert warning" role="status">{{ status?.voice.message }}</div>
+        <div v-if="error" class="alert error" role="alert"><span>{{ error }}</span><button class="icon-button" aria-label="关闭提示" @click="error = ''"><AppIcon name="close" :size="16" /></button></div>
+        <OverviewPage v-if="page === 'home' && entered" @navigate="page = $event" />
+        <SettingsPage v-else-if="page === 'settings'" />
+        <SongbookPage v-else-if="page === 'songbook'" />
+        <GalleryPage v-else-if="page === 'gallery'" />
+        <ConnectionsPage v-else-if="page === 'connection'" />
+      </div>
+      <footer class="app-footer"><span><AppIcon name="shield" :size="14" />设置保存在这台电脑</span><span>关闭窗口后，大肥鱼仍可在后台运行</span></footer>
+    </main>
+    <div v-if="notice" class="toast" role="status"><AppIcon name="check" :size="18" />{{ notice }}</div>
+    </div>
+  </div>
+</template>

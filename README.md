@@ -1,0 +1,55 @@
+# 大肥鱼 · QQCompanion
+
+一个运行于 Windows 的 QQ AI 陪伴项目，将持续聊天、按联系人隔离的记忆、真实数字活动与实际动作接起来。
+
+## 功能
+
+- QQ 私聊、指定群被点名回复、按设置主动联系、离线消息补读。
+- 联系人隔离的聊天、长期记忆、更正与遗忘。
+- 同轮生成聊天正文和受限动作计划，登记后执行，依据真实回执说明结果。
+- 按语境合成本地语音、点歌与完整歌声转换、已有曲库复用。
+- 本地几何图元小画、画册、曲库与桌面控制台。
+- 阅读、作品、公开动态与需主人批准的好友评论。
+- 费用/调用限额、暂停、游戏模式、结果不明时避免重复发送。
+- 加密个人存档、离线资源恢复与新目录路径迁移。
+
+聊天使用用户配置的模型 API。绘图使用文字模型构思加 Pillow 本地绘制。
+语音、识别与唱歌需要相应本地资源；联网聊天需要 QQ 与模型服务可用。
+
+## 首次安装（Windows x64）
+
+1. 安装 Python 3.12、Node.js（满足 Vite 的引擎要求）、官方 QQ 和 Microsoft Edge WebView2 Runtime。
+2. 下载本仓库源码到本地磁盘，运行 `准备运行环境.cmd`。脚本安装独立环境、下载已固定版本的 AstrBot 并构建前端，不启用聊天。
+3. 从 [NapCatQQ](https://github.com/NapNeko/NapCatQQ/releases) 准备 Windows 启动组件到 `napcat/`。目录内应能找到 `napcat.mjs`、`NapCatWinBootMain.exe` 和 `NapCatWinBootHook.dll`；也可以用 `tools/bootstrap.py --napcat-zip` 导入对应的平铺 ZIP。
+4. 运行 `启动设置.cmd`，打开 `http://127.0.0.1:8765/`，填写本人账号、机器人账号、实际可用的模型与 API Key。凭据只保存在本机。
+5. 运行 `runtime/python.exe tools/doctor.py --deep` 检查基础环境。语音/唱歌可选组件未安装时会显示缺失。
+6. 配置完成后运行 `启用恢复后的大肥鱼.cmd`，再运行 `打开大肥鱼控制台.cmd`，按提示完成 QQ 登录。初始自主社交功能关闭，按自己的需要启用。
+
+首次准备需要下载依赖。此仓库未附带第三方模型、参考音频、表情或歌曲。
+语音与唱歌的目录和环境要求见 [可选本地模型](docs/LOCAL_MODELS.md)。
+
+## 私人迁移与 U 盘
+
+源码与个人存档分别保存。`导出私人存档.cmd` 生成加密 `.dfysave`；它包括记忆、配置与作品，不包括 API Key 和 QQ 登录会话。
+模型与已安装环境可另存为加密 `.dfyresources`，其体积可能超过普通 U 盘容量。
+恢复工具可在新电脑离线导入这两部分，并修复登记的作品路径与两个 venv 的基础解释器位置。
+
+恢复过程保持离线，旧待办不会自动重新发送。新电脑需要重新保存 Key 和完成 QQ 登录。
+不要将私人存档、资源包、恢复口令、账号配置或运行日志上传到公开仓库。
+详见 [迁移指南](docs/MIGRATION.md)。
+
+## 开发与验证
+
+```powershell
+runtime/python.exe -X utf8 -m pytest tests -q
+runtime/python.exe -X utf8 -m ruff check app plugins/astrbot_plugin_qq_companion tests tools
+npm run build --prefix frontend
+```
+
+测试使用临时数据库与模拟模型/通道，不需要真实 QQ 或 API Key。部分适配测试需要按准备步骤下载的 AstrBot 源码。
+当前支持范围为 Windows；完整语音和新歌制作还受显卡、驱动与模型兼容性影响。
+
+## 许可
+
+项目自有源码采用 AGPL-3.0-or-later。第三方文件保留原许可，见 [第三方说明](THIRD_PARTY_NOTICES.md)。
+请仅使用自己有权限的账号、数据、模型和音频。

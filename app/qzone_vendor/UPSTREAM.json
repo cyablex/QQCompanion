@@ -1,0 +1,19 @@
+{
+  "source": "https://github.com/Zhalslar/astrbot_plugin_qzone",
+  "version": "v3.1.3",
+  "date": "2026-10-20",
+  "files": {
+    "__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "core\\__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "core\\config.py": "24d69b2f7812a4b963b5552c719e838645fc987ef77f87d1baf3a28fb8c1d10c",
+    "core\\model.py": "23df27711481c5e4a8a13bb5816c199c9adb88802639cc73e25eecee5cb3f1e7",
+    "core\\qzone\\__init__.py": "a88bcb9054a1629c55c9ee304c728dd856443fd1f58486ca83d4c45b97ce5efe",
+    "core\\qzone\\api.py": "5e126b09e6d0518408fa85b592a458765dfa3ca416060806b4ca8ce7691e43d4",
+    "core\\qzone\\client.py": "171ad81d7accaa718e868b5f356ed105160b2e7989a80b688fed05cad655e848",
+    "core\\qzone\\constants.py": "6f1125de5fe69e3699e49ff6d8413987561b6af305c89f9f5c31d3b02c043162",
+    "core\\qzone\\model.py": "1caf4edf55e1b886060a0602cd76dc8d0f3a05b7d0172705537a878d9ed732ba",
+    "core\\qzone\\parser.py": "42b44365fbfef7eab78b7306f9be0e4c64c72319b2065e631d25f71988284bce",
+    "core\\qzone\\session.py": "f005e781ca2fe1b60aeb4d6e68c1d1bdbc5d58e612759f091bca1d24a7ddc3a2",
+    "core\\qzone\\utils.py": "c6480a02f57e5987ac0a5ebca404f78a10c4de57bda0665f1462e4f7b036806f"
+  }
+}
