@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -79,3 +81,15 @@ def test_clean_runtime_copies_standard_python_without_host_packages(tmp_path):
     assert (target / "python.exe").is_file()
     assert (target / "Lib/stdlib.py").is_file()
     assert not (target / "Lib/site-packages").exists()
+
+
+def test_bootstrap_help_works_with_a_non_chinese_console():
+    script = Path(__file__).resolve().parents[1] / "tools/bootstrap.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        capture_output=True,
+        env={**os.environ, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"},
+        timeout=10,
+    )
+    assert result.returncode == 0
+    assert "准备新的大肥鱼安装" in result.stdout.decode("utf-8")

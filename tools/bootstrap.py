@@ -148,6 +148,8 @@ def prepare(root, napcat_zip=None, skip_frontend=False):
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(
         description="准备新的大肥鱼安装，不启动 QQ、不发送消息。"
     )
