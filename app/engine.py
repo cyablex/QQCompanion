@@ -55,6 +55,7 @@ class Engine:
         self.voice = None
         self.singing = None
         self.turn_actions = None
+        self.delivery_router = None
         self.stickers = None
         self.memory = ConversationMemory(store)
         self.activities = DigitalActivities(store)
@@ -230,6 +231,10 @@ class Engine:
             public=public, now=datetime.now(TZ),
         )
         system, contexts = prompt.system, prompt.contexts
+        if not public:
+            from message_channels import route
+            if route(self.store, cfg, contact, read_through=read_through) == 'vpet':
+                system += '\n本轮主人通过桌面形象与你交流，和QQ共用此前的相处记录。回复会回到桌宠；继续自然接话和执行已接通的动作，不要求主人为同一件事回QQ重新说。'
         activity_query = prompt.query
         plain_reply, outreach = prompt.plain_reply, prompt.outreach
         wave_blocked = prompt.wave_blocked
@@ -607,7 +612,8 @@ class Engine:
                         if not self.singing or not self.singing.library.allowed_file(result.get("song_id", ""), result["song_file"]):
                             raise DeliveryUnavailable("Song unavailable; send not attempted")
                         options = {"song_file": result["song_file"], "song_id": result["song_id"]}
-                    outgoing = self.send(contact, line, **options)
+                    outgoing = (self.delivery_router(contact, kind, result, key, i, line, options)
+                                if self.delivery_router else self.send(contact, line, **options))
                     receipt = await asyncio.wait_for(outgoing, timeout=90 if options.get("song_file") else 30)
                     if not isinstance(receipt, dict) or not receipt.get("message_id"):
                         raise RuntimeError("No message receipt")

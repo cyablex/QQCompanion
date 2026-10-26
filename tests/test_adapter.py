@@ -20,6 +20,37 @@ from store import Store  # noqa: E402
 
 
 @pytest.mark.asyncio
+async def test_qq_and_desktop_enqueue_use_same_durable_worker(tmp_path):
+    spec = importlib.util.spec_from_file_location(
+        'companion_shared_desktop_queue_test', ROOT / 'plugins/astrbot_plugin_qq_companion/main.py')
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    plugin = module.QQCompanion.__new__(module.QQCompanion)
+    store = Store(tmp_path / 'shared-queue.sqlite3')
+    plugin.store, plugin.reply_queue = store, ReplyQueue(store)
+    plugin.pending, plugin.workers = {}, {}
+    started = asyncio.Event()
+
+    async def drain(contact):
+        started.set()
+        await asyncio.Future()
+
+    plugin.drain = drain
+    try:
+        worker = plugin.enqueue_reply('12345', 'vpet:' + 'a' * 32)
+        await started.wait()
+        assert store.get('reply_job:12345')['event'].startswith('vpet:')
+        assert plugin.enqueue_reply('12345', 'qq-followup') is worker
+        assert store.get('reply_job:12345')['event'] == 'qq-followup'
+        assert plugin.pending['12345'] == 'qq-followup'
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+    finally:
+        store.db.close()
+
+
+@pytest.mark.asyncio
 async def test_shutdown_cancels_pending_friend_space_scan_before_session_close(tmp_path):
     spec = importlib.util.spec_from_file_location(
         "companion_social_shutdown_test", ROOT / "plugins/astrbot_plugin_qq_companion/main.py"

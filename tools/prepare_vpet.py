@@ -19,7 +19,10 @@ ASSET_GROUPS = ('vup/Default/Nomal/1/', 'vup/Touch_Head/A_Nomal/', 'vup/Touch_He
                 'vup/Touch_Head/C_Nomal/', 'vup/Touch_Body/A_Happy/tb1/', 'vup/Touch_Body/B_Happy/tb1/',
                 'vup/Touch_Body/C_Happy/tb1/', 'vup/Raise/Raised_Static/A_Nomal/',
                 'vup/Raise/Raised_Static/B_Nomal/', 'vup/Raise/Raised_Static/C_Nomal/',
-                'vup/Raise/Raised_Dynamic/Nomal/1/')
+                'vup/Raise/Raised_Dynamic/Nomal/1/',
+                'vup/MOVE/walk.left/A_Nomal/', 'vup/MOVE/walk.left/B_Nomal/', 'vup/MOVE/walk.left/C_Nomal/',
+                'vup/MOVE/walk.right/A_Nomal/', 'vup/MOVE/walk.right/B_Nomal/', 'vup/MOVE/walk.right/C_Nomal/',
+                'vup/Sleep/A_Nomal/', 'vup/Sleep/B_Nomal/', 'vup/Sleep/C_Nomal/')
 
 
 def download(url, target):

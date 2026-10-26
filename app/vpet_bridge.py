@@ -3,20 +3,32 @@
 import asyncio
 import contextvars
 import json
+import mimetypes
+import os
 import re
 import secrets
 import threading
 import time
+from pathlib import Path
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from settings import ROOT, local_token
 from creative_projects import CreativeProjects
+from message_channels import route
+from vpet_messages import PetMessages
 import vpet_runtime
 
 PORT = 8766
 DELIVERY = contextvars.ContextVar('vpet_delivery', default=None)
 INTERACTIONS = {'head': '主人在桌宠上摸了摸你的头。', 'body': '主人在桌宠上轻轻戳了你一下。',
                 'lift': '主人把桌宠提了起来。'}
+
+
+@dataclass
+class MediaResponse:
+    path: Path
+    mime: str
 
 
 class VPetBridge:
@@ -27,6 +39,87 @@ class VPetBridge:
         self.loop = None
         self.last_reply = 0
         self.requests = set()
+        self.chat_tasks = set()
+
+    def record_source(self, ident, cfg):
+        self.store.set('event_source:' + ident, dict(channel='vpet', owner=cfg['owner_qq'], bot=cfg['bot_qq'], time=time.time()))
+
+    async def route_delivery(self, contact, kind, result, key, index, text, options):
+        if DELIVERY.get() is not None:
+            return await self.deliver(contact, text, **options)
+        cfg = self.engine.config_reader()
+        channel = route(self.store, cfg, contact, event_id=result.get('delivery_event'),
+                        read_through=result.get('read_through') if kind not in {'proactive', 'friend_proactive'} else None)
+        if channel == 'qq':
+            return await self.plugin.send_private(contact, text, **options)
+        if channel != 'vpet' or cfg.get('game_mode'):
+            from engine import DeliveryUnavailable
+            raise DeliveryUnavailable('Original desktop channel unavailable')
+        if options.get('sticker_id'):
+            item = self.engine.stickers.items.get(options['sticker_id']) if self.engine.stickers else None
+            if not item:
+                from engine import DeliveryUnavailable
+                raise DeliveryUnavailable('Sticker unavailable')
+            options = dict(options, sticker_file=item['file'])
+        ident = PetMessages(self.store, cfg).put(key, index, text, options)
+        return dict(message_id='vpet:' + ident)
+
+    async def chat(self, value):
+        if (not isinstance(value, dict) or set(value) != {'id', 'text'}
+                or not isinstance(value['id'], str) or not re.fullmatch(r'[a-f0-9]{32}', value['id'])
+                or not isinstance(value['text'], str) or not value['text'].strip() or len(value['text']) > 2000):
+            raise ValueError('请填写2000字以内的消息。')
+        cfg = self.engine.config_reader()
+        if cfg.get('game_mode') or not self.engine.allowed(cfg, cfg['owner_qq']) or not vpet_runtime.preferences(self.root).get('enabled'):
+            raise ValueError('大肥鱼正在休息，暂时没有接收这条消息。')
+        event = 'vpet:' + value['id']
+        owner = cfg['owner_qq']
+        receipt_key = f"vpet_command:{cfg['bot_qq']}:{owner}:{value['id']}"
+        previous = self.store.get(receipt_key)
+        if previous:
+            return dict(accepted=True, id=value['id'], confirmation=previous['confirmation'])
+        if self.store.db.execute('SELECT 1 FROM events WHERE id=?', (event,)).fetchone():
+            return dict(accepted=True, id=value['id'])
+        command = self.engine.personal_command(owner, value['text'].strip())
+        if command is None:
+            command = self.engine.admin(owner, value['text'].strip())
+        if command is not None:
+            # Command acknowledgments use this authenticated HTTP response, even
+            # when the command just forgot its own input or paused the engine.
+            self.store.set(receipt_key, dict(confirmation=command))
+            return dict(accepted=True, id=value['id'], confirmation=command)
+        if self.store.incoming(event, owner, value['text'].strip()):
+            self.record_source(event, cfg)
+            task = self.plugin.enqueue_reply(owner, event)
+            self.chat_tasks.add(task)
+            task.add_done_callback(self.chat_tasks.discard)
+        return dict(accepted=True, id=value['id'])
+
+    async def media(self, ident):
+        cfg = self.engine.config_reader()
+        if cfg.get('game_mode'):
+            raise ValueError('游戏模式下暂停桌面播放。')
+        item = PetMessages(self.store, cfg).get(ident)['media']
+        if not item:
+            raise ValueError('这条消息没有附件。')
+        path = Path(item['path'])
+        if item['kind'] == 'song':
+            valid = self.engine.singing and self.engine.singing.library.allowed_file(item['song_id'], path)
+            mime = 'audio/mpeg'
+        elif item['kind'] == 'voice':
+            from local_voice import allowed_file
+            valid = allowed_file(cfg, cfg['owner_qq'], path)
+            mime = 'audio/wav'
+        elif item['kind'] == 'sticker':
+            sticker = self.engine.stickers.items.get(item['sticker_id']) if self.engine.stickers else None
+            valid = sticker and Path(sticker['file']).resolve() == path.resolve()
+            mime = mimetypes.guess_type(path.name)[0] or 'image/png'
+        else:
+            valid = self.engine.sketchbook.allowed_file(cfg, path, cfg['owner_qq'])
+            mime = 'image/png'
+        if not valid or not path.is_file():
+            raise ValueError('附件已不可用，文字记录仍保留。')
+        return MediaResponse(path, mime)
 
     def _key(self, cfg, ident):
         return f"vpet:{cfg['bot_qq']}:{cfg['owner_qq']}:{ident}"
@@ -40,6 +133,8 @@ class VPetBridge:
         activity = '正在做你交代的事' if active else '等你来玩'
         return dict(game_mode=bool(cfg.get('game_mode')), enabled=vpet_runtime.preferences(self.root).get('enabled') is True,
                     ready=self.engine.allowed(cfg, cfg['owner_qq']), activity=activity,
+                    generation=self.engine.memory_epoch(cfg['owner_qq']),
+                    scope=cfg['bot_qq'] + ':' + cfg['owner_qq'],
                     project=project['title'] if project else '', next_step=project['next_step'] if project else '')
 
     async def interact(self, value):
@@ -67,6 +162,7 @@ class VPetBridge:
                 return dict(messages=[], saved=False, state='cooldown')
             self.last_reply = now
             self.store.incoming('vpet:' + value['id'], owner, '[桌宠互动] ' + INTERACTIONS[value['kind']])
+            self.record_source('vpet:' + value['id'], cfg)
             generation = self.engine.memory_epoch(owner)
             pending = dict(messages=[], saved=True, state='recorded')
             self.store.set(key, pending)
@@ -114,6 +210,17 @@ class VPetBridge:
             return await self.state()
         if method == 'POST' and path == '/interact':
             return await self.interact(value)
+        if method == 'POST' and path == '/chat':
+            return await self.chat(value)
+        if method == 'GET' and path == '/messages':
+            cfg = self.engine.config_reader()
+            return dict(messages=[] if cfg.get('game_mode') else PetMessages(self.store, cfg).pending())
+        if method == 'POST' and path == '/ack':
+            return PetMessages(self.store, self.engine.config_reader()).acknowledge(value.get('ids') if isinstance(value, dict) else None)
+        if method == 'GET' and path == '/history':
+            return dict(messages=self.store.history(self.engine.config_reader()['owner_qq'], limit=40, max_chars=16000))
+        if method == 'GET' and path.startswith('/media/'):
+            return await self.media(path.removeprefix('/media/'))
         if method == 'POST' and path == '/open' and isinstance(value, dict) and set(value) == {'page'}:
             vpet_runtime.open_console(value['page'], self.root)
             return dict(opened=True)
@@ -134,11 +241,24 @@ class VPetBridge:
                     return
                 try:
                     length = int(self.headers.get('Content-Length', '0'))
-                    if not 0 <= length <= 8192:
+                    if not 0 <= length <= 32768:
                         raise ValueError('请求过长。')
                     value = json.loads(self.rfile.read(length)) if length else None
                     future = asyncio.run_coroutine_threadsafe(bridge.dispatch(self.command, self.path, value), bridge.loop)
                     data = future.result(timeout=180)
+                    if isinstance(data, MediaResponse):
+                        with data.path.open('rb') as source:
+                            self.send_response(200)
+                            self.send_header('Content-Type', data.mime)
+                            self.send_header('Cache-Control', 'no-store')
+                            self.send_header('Content-Length', str(os.fstat(source.fileno()).st_size))
+                            self.end_headers()
+                            import shutil
+                            try:
+                                shutil.copyfileobj(source, self.wfile)
+                            except (BrokenPipeError, ConnectionResetError):
+                                pass
+                        return
                     payload = dict(ok=True, data=data)
                     status = 200
                 except ValueError as exc:
@@ -166,7 +286,7 @@ class VPetBridge:
         if self.server:
             await asyncio.to_thread(self.server.shutdown)
             self.server.server_close()
-        tasks = list(self.requests)
+        tasks = list(self.requests | self.chat_tasks)
         for task in tasks:
             task.cancel()
         if tasks:

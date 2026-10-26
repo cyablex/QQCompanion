@@ -13,6 +13,7 @@ import psutil
 from settings import ROOT, atomic_json, read_settings
 from song_library import SongLibrary, normalized, artist_key
 from song_source import matches, video_id
+from message_channels import route
 
 SONG_INTENT = re.compile(r"唱|点歌|来(?:一|个|首)|听(?:一首|首歌)|想听")
 DIRECT_REQUEST = re.compile(r"^(?:(?:请|你|能不能|能|可以|帮我|给我|麻烦|大肥鱼)[，,\s]*)*(?:唱|点歌|来一首|来首|放一首|想听|我想听|我要听)")
@@ -43,7 +44,7 @@ class Singing:
             "SELECT s.title,s.artist,r.state,r.result,s.progress FROM song_requests r JOIN songs s ON s.id=r.song_id "
             "WHERE r.contact=? ORDER BY r.created DESC LIMIT 3", (contact,))]
         pending = self.pending_choices(contact)
-        return "\n【实际曲库与本聊天点歌状态】waiting仍待完成，awaiting_source在等对方补音源链接，sent仅表示QQ接受了歌曲语音，unknown不能说发送成功。只有pending而没有请求时仍在选歌，不能说在制作或排队；普通聊天的口头承诺不会创建任务。\n" + json.dumps(dict(songs=songs, requests=requests, pending=pending), ensure_ascii=False)
+        return "\n【实际曲库与本聊天点歌状态】waiting仍待完成，awaiting_source在等对方补音源链接，sent仅表示原入口接受了歌曲文件（QQ回执或桌面播放队列），不代表对方已听完，unknown不能说发送成功。只有pending而没有请求时仍在选歌，不能说在制作或排队；普通聊天的口头承诺不会创建任务。\n" + json.dumps(dict(songs=songs, requests=requests, pending=pending), ensure_ascii=False)
 
     def pending_choices(self, contact):
         cfg = self.config()
@@ -71,7 +72,8 @@ class Singing:
         if not request:
             note = "这次还没开始制作或发送，刚才仍在选歌。告诉我歌名和歌手，或者让我从现有曲库里选一首就好。"
         elif request["state"] == "sent":
-            note = f"《{request['title']}》的歌曲语音已收到QQ发送回执。"
+            note = (f"《{request['title']}》的歌曲已交给桌宠播放入口。" if route(self.store, self.config(), contact, event_id=request['event_id']) == 'vpet'
+                    else f"《{request['title']}》的歌曲语音已收到QQ发送回执。")
         elif request["state"] == "unknown":
             note = f"《{request['title']}》的发送结果还没确认，我先不重复发，避免连发。"
         elif request["state"] == "awaiting_source":
@@ -88,7 +90,7 @@ class Singing:
                 note = f"《{request['title']}》还没发出，当前进度：{request['progress'] or '等待准备'}。"
         else:
             note = f"上次的《{request['title']}》没有完成或已取消，目前没有新的歌曲语音发出。想听可以重新点歌。"
-        await self.say(contact, note, key + ":progress", engine)
+        await self.say(contact, note, key + ":progress", engine, source_event=origin['event_id'])
 
     def remember_source_request(self, request, song):
         key = f"song_pending:{request['bot']}:{request['contact']}:{request['requester']}"
@@ -112,13 +114,13 @@ class Singing:
             block.append(message["text"])
         return dict(event_id=row["id"], text="\n".join(reversed(block)) or row["text"], latest=row["text"], requester=contact, created=row["created"])
 
-    async def say(self, contact, text, key, engine):
+    async def say(self, contact, text, key, engine, source_event=None):
         cfg = self.config()
         prior = self.store.db.execute("SELECT state FROM actions WHERE id=?", (key,)).fetchone()
         if prior and prior[0] == "cancelled":
             self.store.outcome(key, "failed_not_sent")
         return await engine.deliver(contact, "song_notice", dict(action="reply", messages=[text], revision=cfg["revision"],
-                                    read_through=self.store.last_incoming(contact)), key=key)
+                                    read_through=self.store.last_incoming(contact), delivery_event=source_event), key=key)
 
     async def parse(self, text, pending, engine, contact):
         plain = re.sub(r"^\[语音转写[^\]]*\]\s*", "", text).strip()
@@ -212,7 +214,7 @@ class Singing:
         text = origin["text"]
         if (request and request.get("intent") == "list") or (request is None and re.search(r"曲库|歌单|会唱(?:什么|哪些)|有哪些歌", text)):
             available = [f"《{s['title']}》·{s['artist']}" for s in self.library.list() if s["state"] == "ready"]
-            await self.say(contact, "目前收录了：" + "、".join(available[:25]) if available else "目前还没有准备好的曲目。告诉我歌名和歌手或版本，我再去准备。", key + ":list", engine)
+            await self.say(contact, "目前收录了：" + "、".join(available[:25]) if available else "目前还没有准备好的曲目。告诉我歌名和歌手或版本，我再去准备。", key + ":list", engine, source_event=origin['event_id'])
             return True
         if (request and request.get("intent") == "cancel") or (request is None and CANCEL.search(origin.get("latest", text))):
             if pending or self.store.db.execute("SELECT 1 FROM song_requests WHERE contact=? AND requester=? AND state IN ('waiting','awaiting_source')",
@@ -220,10 +222,10 @@ class Singing:
                 self.store.set(pending_key, {})
                 self.store.db.execute("UPDATE song_requests SET state='cancelled',result='对方取消了点歌。' WHERE contact=? AND requester=? AND state IN ('waiting','awaiting_source')",
                                       (contact, origin["requester"]))
-                await self.say(contact, "好，这次点歌取消了。", key + ":cancel", engine)
+                await self.say(contact, "好，这次点歌取消了。", key + ":cancel", engine, source_event=origin['event_id'])
                 return True
             if request is not None:
-                await self.say(contact, "当前没有待取消的点歌。", key + ":cancel", engine)
+                await self.say(contact, "当前没有待取消的点歌。", key + ":cancel", engine, source_event=origin['event_id'])
                 return True
             return False
         if (request is None and not pending and not SONG_INTENT.search(text)
@@ -234,7 +236,7 @@ class Singing:
             if request is None:
                 request = await self.parse(text, pending, engine, contact)
         except (ValueError, TypeError):
-            await self.say(contact, "把想听的歌名和歌手或版本一起告诉我吧，我先确认清楚。", key + ":parse", engine)
+            await self.say(contact, "把想听的歌名和歌手或版本一起告诉我吧，我先确认清楚。", key + ":parse", engine, source_event=origin['event_id'])
             return True
         if not contact.startswith("group:") and self.store.last_incoming(contact) != before:
             return True
@@ -247,16 +249,16 @@ class Singing:
             self.store.set(pending_key, dict(stage="title", created=origin["created"], expires=time.time() + 86400))
             note = ("我还没选定可发送的歌。你也可以直接指定歌名和歌手。" if request["available"]
                     else "曲库里还没有准备好、能直接唱的歌。告诉我歌名和歌手或版本，我再去准备。")
-            await self.say(contact, note, key + ":no-choice", engine)
+            await self.say(contact, note, key + ":no-choice", engine, source_event=origin['event_id'])
             return True
         title, artist = request["title"], request["artist"]
         if not title:
             self.store.set(pending_key, dict(stage="title", created=origin["created"], expires=time.time() + 86400))
-            await self.say(contact, "想听哪首？告诉我歌名和歌手或版本，也可以让我从现有曲库里选一首。", key + ":title", engine)
+            await self.say(contact, "想听哪首？告诉我歌名和歌手或版本，也可以让我从现有曲库里选一首。", key + ":title", engine, source_event=origin['event_id'])
             return True
         if not artist:
             self.store.set(pending_key, dict(title=title, created=origin["created"], expires=time.time() + 86400))
-            await self.say(contact, f"你想听哪位歌手、或者哪个版本的《{title}》？", key + ":artist", engine)
+            await self.say(contact, f"你想听哪位歌手、或者哪个版本的《{title}》？", key + ":artist", engine, source_event=origin['event_id'])
             return True
         self.store.set(pending_key, {})
         song = self.library.add(title, artist, request.get("source_url", ""))
@@ -287,7 +289,7 @@ class Singing:
             note = f"好，《{title}》的{artist}版我还没准备好。我去学一下，做好后就发到这里，稍等我一会儿。"
             if cfg.get("game_mode"):
                 note = f"《{title}》的点歌已记下。现在是游戏模式，等退出后我再准备，做好就发到这里。"
-            await self.say(contact, note, key + ":notice:" + source, engine)
+            await self.say(contact, note, key + ":notice:" + source, engine, source_event=origin['event_id'])
         return True
 
     async def deliver(self, request_id):
@@ -311,17 +313,17 @@ class Singing:
         if song["state"] == "needs_source":
             self.remember_source_request(request, song)
             note = f"《{song['title']}》还没拿到可用的完整音源：{song['error']} 我记着这次点歌，补一条B站单曲链接，我就接着准备。"
-            if await self.say(contact, note, request_id + ":source:" + str(song["updated"]), engine):
+            if await self.say(contact, note, request_id + ":source:" + str(song["updated"]), engine, source_event=request['event_id']):
                 self.store.db.execute("UPDATE song_requests SET state='awaiting_source',result=? WHERE id=?", (song["error"], request_id))
             return
         retry = self.store.get("song_retry:" + song["id"], {})
         if song["state"] == "queued" and retry.get("attempts"):
             self.remember_source_request(request, song)
             await self.say(contact, f"《{song['title']}》的B站音源暂时没读到，我记着，稍后自动再试。你也可以直接补一条B站单曲链接。",
-                           request_id + ":retry", engine)
+                           request_id + ":retry", engine, source_event=request['event_id'])
             return
         if song["state"] == "failed":
-            if await self.say(contact, f"《{song['title']}》这次没准备好：{song['error']} 还没有发出歌声。", request_id + ":failed", engine):
+            if await self.say(contact, f"《{song['title']}》这次没准备好：{song['error']} 还没有发出歌声。", request_id + ":failed", engine, source_event=request['event_id']):
                 self.store.db.execute("UPDATE song_requests SET state='failed',result=? WHERE id=?", (song["error"], request_id))
             else:
                 self.store.db.execute("UPDATE song_requests SET due=? WHERE id=?", (time.time() + 60, request_id))
@@ -334,7 +336,9 @@ class Singing:
         action_key = request_id + ":delivery"
         action = self.store.db.execute("SELECT state FROM actions WHERE id=?", (action_key,)).fetchone()
         if action and action[0] == "succeeded":
-            self.store.db.execute("UPDATE song_requests SET state='sent',result='QQ已确认接收歌曲语音。' WHERE id=?", (request_id,))
+            note = ('歌曲已交给桌宠播放入口。' if route(self.store, cfg, contact, event_id=request['event_id']) == 'vpet'
+                    else 'QQ已确认接收歌曲语音。')
+            self.store.db.execute("UPDATE song_requests SET state='sent',result=? WHERE id=?", (note, request_id))
             return
         if action and action[0] in {"unknown", "sending"}:
             self.store.db.execute("UPDATE song_requests SET state='unknown',result='发送结果未确认，不自动重发。' WHERE id=?", (request_id,))
@@ -346,7 +350,7 @@ class Singing:
             sent = await engine.deliver(contact, "song_reply", dict(
                 action="reply", messages=[f"《{song['title']}》 · {song['artist']}"], revision=cfg["revision"],
                 read_through=self.store.last_incoming(contact), memory_generation=request["generation"],
-                song_id=song["id"], song_file=song["file"],
+                song_id=song["id"], song_file=song["file"], delivery_event=request['event_id'],
             ), key=action_key)
         except Exception as exc:
             action = self.store.db.execute("SELECT state FROM actions WHERE id=?", (action_key,)).fetchone()
@@ -357,7 +361,8 @@ class Singing:
             self.store.set("song_delivery_error", type(exc).__name__)
         self.store.db.execute("UPDATE song_requests SET state=?,updated=?,due=?,result=? WHERE id=?",
                               ("sent" if sent else "waiting", time.time(), 0 if sent else time.time() + 60,
-                               "QQ已确认接收歌曲语音。" if sent else "等待连接或聊天额度恢复后发送。", request_id))
+                               ("歌曲已交给桌宠播放入口。" if route(self.store, cfg, contact, event_id=request['event_id']) == 'vpet'
+                                else "QQ已确认接收歌曲语音。") if sent else "等待连接或聊天额度恢复后发送。", request_id))
         if sent:
             pending_key = f"song_pending:{request['bot']}:{contact}:{request['requester']}"
             if self.store.get(pending_key, {}).get("request_id") == request_id:

@@ -172,6 +172,10 @@ class Store:
         self.db.execute("DELETE FROM state WHERE key LIKE ?", (f"creative:%:{contact}:%",))
         self.db.execute("DELETE FROM state WHERE key LIKE ?", (f"creative_active:%:{contact}",))
         self.db.execute("DELETE FROM state WHERE key LIKE ?", (f"vpet:%:{contact}:%",))
+        self.db.execute("DELETE FROM state WHERE key LIKE ?", (f"vpet_msg:%:{contact}:%",))
+        # Keep command deduplication tombstones, but remove private acknowledgments.
+        self.db.execute("UPDATE state SET value=json_set(value,'$.confirmation','指令已处理；相关记忆已清理。') WHERE key LIKE ?",
+                        (f"vpet_command:%:{contact}:%",))
         # Reset after deletion: SQLite may reuse message IDs when history is empty.
         from conversation_memory import ConversationMemory
 

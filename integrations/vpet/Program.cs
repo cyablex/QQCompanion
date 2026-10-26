@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -32,7 +33,9 @@ public static class Program
         {
             var app = new App();
             app.DispatcherUnhandledException += (_, e) => Log(root, e.Exception);
-            app.Run(new PetWindow(root));
+            int portIndex = Array.IndexOf(args, "--port");
+            int port = portIndex >= 0 && portIndex + 1 < args.Length ? int.Parse(args[portIndex + 1]) : 8766;
+            app.Run(new PetWindow(root, port));
         }
         catch (Exception error) { Log(root, error); }
     }
@@ -50,9 +53,18 @@ public sealed class PetWindow : Window, IController
     private readonly HttpClient client = new() { BaseAddress = new Uri("http://127.0.0.1:8766"), Timeout = TimeSpan.FromSeconds(175) };
     private readonly TextBlock bubble = new() { TextWrapping = TextWrapping.Wrap, FontSize = 13, Foreground = Brushes.DarkSlateBlue };
     private readonly TextBlock status = new() { Text = "正在连接大肥鱼…", FontSize = 11, Foreground = Brushes.SlateGray, TextAlignment = TextAlignment.Center };
-    private readonly DispatcherTimer poll = new() { Interval = TimeSpan.FromSeconds(4) };
+    private readonly DispatcherTimer poll = new() { Interval = TimeSpan.FromSeconds(2) };
     private readonly DispatcherTimer bubbleTimer = new() { Interval = TimeSpan.FromSeconds(12) };
-    private readonly Border bubbleBox;
+    private readonly DispatcherTimer positionTimer = new() { Interval = TimeSpan.FromMilliseconds(800) };
+    private readonly DispatcherTimer wanderTimer = new() { Interval = TimeSpan.FromSeconds(75) };
+    private readonly Popup bubblePopup;
+    private readonly System.Windows.Forms.NotifyIcon tray;
+    private readonly DesktopMedia media;
+    private readonly HashSet<string> seen = new();
+    private WindowPreferences preferences;
+    private long? generation;
+    private string? scope;
+    public ChatWindow Chat { get; }
     private Main? pet;
     private bool loading, interacting, quitting, polling;
     private DateTime lastInteraction;
@@ -63,9 +75,11 @@ public sealed class PetWindow : Window, IController
     public int PressLength => 450;
     public double ZoomRatio => zoom;
 
-    public PetWindow(string root)
+    public PetWindow(string root, int port = 8766)
     {
         this.root = root;
+        client.BaseAddress = new Uri($"http://127.0.0.1:{port}");
+        preferences = LoadPreferences(); zoom = preferences.Zoom;
         Title = "大肥鱼桌宠";
         WindowStyle = WindowStyle.None;
         AllowsTransparency = true;
@@ -73,21 +87,38 @@ public sealed class PetWindow : Window, IController
         ResizeMode = ResizeMode.NoResize;
         ShowInTaskbar = false;
         Topmost = true;
-        Width = 310; Height = 400;
+        Width = Math.Max(280, 500 * zoom + 30); Height = 500 * zoom + 42;
         var area = SystemParameters.WorkArea;
-        Left = area.Right - Width - 30; Top = area.Bottom - Height - 20;
+        Left = preferences.Left ?? area.Right - Width - 30; Top = preferences.Top ?? area.Bottom - Height - 20;
+        KeepOnScreen();
         var stack = new StackPanel();
-        bubbleBox = new Border { Background = Brushes.White, CornerRadius = new CornerRadius(12), Padding = new Thickness(12),
-            Margin = new Thickness(12, 0, 12, 4), Child = bubble, Visibility = Visibility.Collapsed };
-        stack.Children.Add(bubbleBox);
+        bubblePopup = new Popup { PlacementTarget = this, Placement = PlacementMode.Top, AllowsTransparency = true, StaysOpen = true,
+            Child = new Border { Background = Brushes.White, CornerRadius = new CornerRadius(12), Padding = new Thickness(12),
+                MaxWidth = 330, MaxHeight = 220, Child = new ScrollViewer { Content = bubble, VerticalScrollBarVisibility = ScrollBarVisibility.Auto } } };
+        bubble.MouseLeftButtonDown += (_, _) => OpenChat();
         var stage = new Grid { Height = 500 * zoom, Width = 500 * zoom };
         stack.Children.Add(stage);
         stack.Children.Add(new Border { Child = status, Background = Brushes.WhiteSmoke, CornerRadius = new CornerRadius(8), Padding = new Thickness(7, 4, 7, 4), Margin = new Thickness(20, 3, 20, 3) });
         Content = stack;
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", File.ReadAllText(Path.Combine(root, "config", "vpet-bridge.token")).Trim());
+        Chat = new ChatWindow(this);
+        media = new DesktopMedia(this, client, root) { Quiet = preferences.Quiet };
+        tray = new System.Windows.Forms.NotifyIcon { Text = "大肥鱼桌宠", Icon = System.Drawing.SystemIcons.Application, Visible = true };
+        var trayMenu = new System.Windows.Forms.ContextMenuStrip();
+        trayMenu.Items.Add("显示 / 隐藏", null, (_, _) => ToggleVisible());
+        trayMenu.Items.Add("和大肥鱼说话", null, (_, _) => OpenChat());
+        trayMenu.Items.Add("安静陪伴 / 恢复", null, (_, _) => SetQuiet(!preferences.Quiet));
+        trayMenu.Items.Add("退出桌宠", null, (_, _) => Quit());
+        tray.ContextMenuStrip = trayMenu; tray.DoubleClick += (_, _) => { Show(); OpenChat(); };
         var menu = new ContextMenu();
+        AddMenu(menu, "和大肥鱼说话", OpenChat);
         AddMenu(menu, "摸摸头", () => pet?.DisplayTouchHead());
         AddMenu(menu, "戳一下", () => pet?.DisplayTouchBody());
+        AddMenu(menu, "散步一下", Walk);
+        AddMenu(menu, "安静陪伴 / 恢复", () => SetQuiet(!preferences.Quiet));
+        AddMenu(menu, "自动散步：开 / 关", () => { preferences.Wander = !preferences.Wander; SavePreferences(); ShowBubble(preferences.Wander ? "空闲时偶尔走走。" : "就在这里陪你。"); });
+        AddMenu(menu, "停止播放", media.Stop);
+        AddMenu(menu, "隐藏到托盘", ToggleVisible);
         menu.Items.Add(new Separator());
         AddMenu(menu, "打开共同经历", () => _ = OpenPage("creative"));
         AddMenu(menu, "打开日历", () => _ = OpenPage("calendar"));
@@ -96,13 +127,16 @@ public sealed class PetWindow : Window, IController
         foreach (double size in new[] { .4, .52, .64 })
         {
             double ratio = size;
-            AddMenu(menu, $"大小 {(int)(ratio * 500)}", () => { zoom = ratio; stage.Width = stage.Height = 500 * zoom; Width = Math.Max(280, stage.Width + 30); Height = stage.Height + 140; KeepOnScreen(); });
+            AddMenu(menu, $"大小 {(int)(ratio * 500)}", () => { zoom = ratio; stage.Width = stage.Height = 500 * zoom; Width = Math.Max(280, stage.Width + 30); Height = stage.Height + 42; KeepOnScreen(); SavePreferences(); });
         }
         AddMenu(menu, "关于演示素材", () => ShowBubble("当前动作素材来自 VPet 原作者，角色外观尚未替换。大肥鱼的人设与记忆由原后台提供。"));
-        AddMenu(menu, "退出桌宠", () => { Disable(); quitting = true; Close(); });
+        AddMenu(menu, "退出桌宠", Quit);
         PreviewMouseRightButtonDown += (_, e) => { menu.PlacementTarget = this; menu.IsOpen = true; e.Handled = true; };
         poll.Tick += async (_, _) => await Refresh();
-        bubbleTimer.Tick += (_, _) => { bubbleBox.Visibility = Visibility.Collapsed; bubbleTimer.Stop(); };
+        bubbleTimer.Tick += (_, _) => { bubblePopup.IsOpen = false; bubbleTimer.Stop(); };
+        positionTimer.Tick += (_, _) => { positionTimer.Stop(); SavePreferences(); };
+        LocationChanged += (_, _) => { bubblePopup.IsOpen = false; positionTimer.Stop(); positionTimer.Start(); };
+        wanderTimer.Tick += (_, _) => { if (preferences.Wander && !preferences.Quiet && IsVisible && !Chat.IsVisible && !interacting && DateTime.UtcNow - lastInteraction > TimeSpan.FromSeconds(40)) Walk(); };
         Loaded += async (_, _) => {
             try
             {
@@ -111,6 +145,7 @@ public sealed class PetWindow : Window, IController
                 var assets = Path.Combine(root, "vpet", "assets");
                 var loader = new PetLoader(new LpsDocument(File.ReadAllText(Path.Combine(assets, "vup.lps"))), new DirectoryInfo(assets));
                 var core = new GameCore { Controller = this, Save = new GameSave("大肥鱼"), Graph = loader.Graph(500, Dispatcher) };
+                core.Graph.GraphConfig.Moves.RemoveAll(move => move.Graph != "walk.left" && move.Graph != "walk.right");
                 pet = new Main(core) { NoFunctionMOD = IGameSave.ModeType.Nomal };
                 core.Save.Mode = IGameSave.ModeType.Nomal;
                 stage.Children.Add(pet);
@@ -120,6 +155,7 @@ public sealed class PetWindow : Window, IController
                 pet.EventTimer.Stop(); // Autonomous status/AI stays in the companion backend.
                 pet.Load_3_BindingTimer();
                 pet.Load_4_Start();
+                pet.SetMoveMode(true, false, 1200);
                 pet.Event_TouchHead += () => Dispatcher.InvokeAsync(() => _ = Interact("head"));
                 pet.Event_TouchBody += () => Dispatcher.InvokeAsync(() => _ = Interact("body"));
                 pet.GraphDisplayHandler += info => {
@@ -128,11 +164,13 @@ public sealed class PetWindow : Window, IController
                 };
                 pet.ToolBar.Visibility = Visibility.Collapsed;
                 loading = false;
-                poll.Start(); await Refresh();
+                poll.Start(); wanderTimer.Start(); SetQuiet(preferences.Quiet); await Refresh();
             }
             catch (Exception ex) { status.Text = "桌宠加载失败，请查看日志"; File.AppendAllText(Path.Combine(root, "logs", "vpet-host.log"), ex + Environment.NewLine); }
         };
-        Closed += (_, _) => { poll.Stop(); bubbleTimer.Stop(); pet?.Dispose(); client.Dispose(); if (!quitting) Disable(); };
+        Closed += (_, _) => { poll.Stop(); bubbleTimer.Stop(); positionTimer.Stop(); wanderTimer.Stop(); SavePreferences();
+            bubblePopup.IsOpen = false; tray.Visible = false; tray.Dispose(); media.Dispose();
+            Chat.ShuttingDown = true; Chat.Close(); pet?.Dispose(); client.Dispose(); if (!quitting) Disable(); };
     }
 
     private static void AddMenu(ContextMenu menu, string title, Action action)
@@ -143,16 +181,17 @@ public sealed class PetWindow : Window, IController
 
     private void ShowBubble(string text)
     {
-        bubble.Text = text; bubbleBox.Visibility = Visibility.Visible;
+        bubble.Text = text; bubblePopup.IsOpen = IsVisible;
         bubbleTimer.Stop(); bubbleTimer.Start();
     }
 
-    private async Task<JsonElement> Request(string path, object? data = null)
+    public async Task<JsonElement> Request(string path, object? data = null)
     {
         using var response = data is null ? await client.GetAsync(path) : await client.PostAsync(path,
             new StringContent(JsonSerializer.Serialize(data), Encoding.UTF8, "application/json"));
-        response.EnsureSuccessStatusCode();
         using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        if (!response.IsSuccessStatusCode || !json.RootElement.GetProperty("ok").GetBoolean())
+            throw new InvalidOperationException(json.RootElement.TryGetProperty("message", out var message) ? message.GetString() : "后台暂时没有连接成功。");
         return json.RootElement.GetProperty("data").Clone();
     }
 
@@ -164,8 +203,23 @@ public sealed class PetWindow : Window, IController
         {
             var data = await Request("/status");
             if (data.GetProperty("game_mode").GetBoolean() || !data.GetProperty("enabled").GetBoolean()) { quitting = true; Close(); return; }
+            long current = data.GetProperty("generation").GetInt64();
+            string currentScope = data.GetProperty("scope").GetString()!;
+            if (generation.HasValue && (generation != current || scope != currentScope)) { media.Reset(); Chat.ResetMemory(); seen.Clear(); bubblePopup.IsOpen = false; }
+            generation = current;
+            scope = currentScope;
             status.Text = data.GetProperty("ready").GetBoolean() ? data.GetProperty("activity").GetString() : "大肥鱼正在休息";
             status.ToolTip = data.GetProperty("project").GetString() + "\n" + data.GetProperty("next_step").GetString();
+            var messages = (await Request("/messages")).GetProperty("messages");
+            var acknowledgements = new List<string>();
+            foreach (var message in messages.EnumerateArray())
+            {
+                var id = message.GetProperty("id").GetString()!;
+                if (seen.Add(id)) { var text = message.GetProperty("text").GetString(); if (!string.IsNullOrWhiteSpace(text)) ShowBubble(text); media.Add(message); }
+                acknowledgements.Add(id);
+            }
+            if (acknowledgements.Count > 0) await Request("/ack", new { ids = acknowledgements });
+            await Chat.RefreshHistory();
         }
         catch (Exception) { status.Text = "后台连接中，互动动画仍可使用"; }
         finally { polling = false; }
@@ -203,6 +257,50 @@ public sealed class PetWindow : Window, IController
         catch (IOException) { }
     }
 
+    public void Note(string text) { if (!quitting) ShowBubble(text); }
+    public void OpenChat() { if (quitting) return; Chat.Show(); Chat.Activate(); }
+    private void Quit() { Disable(); quitting = true; Close(); }
+    private void ToggleVisible() { if (IsVisible) { Hide(); bubblePopup.IsOpen = false; media.Stop(); media.Quiet = true; } else { Show(); media.Quiet = preferences.Quiet; KeepOnScreen(); } }
+    private void Walk()
+    {
+        if (pet is null || preferences.Quiet || pet.isPress) return;
+        if (pet.DisplayType.Type == GraphInfo.GraphType.Default) pet.DisplayMove();
+    }
+    private void SetQuiet(bool value)
+    {
+        preferences.Quiet = value; media.Quiet = value;
+        if (value) media.Stop();
+        if (pet is not null)
+        {
+            pet.MoveTimer.Stop();
+            if (value) pet.DisplayStopForce(() => pet.DisplaySleep(true));
+            else { pet.State = Main.WorkingState.Nomal; pet.DisplayStopForce(pet.DisplayToNomal); }
+        }
+        SavePreferences();
+    }
+    private WindowPreferences LoadPreferences()
+    {
+        try
+        {
+            var item = JsonSerializer.Deserialize<WindowPreferences>(File.ReadAllText(Path.Combine(root, "data", "vpet-window.json"))) ?? new();
+            if (item.Zoom is not (.4 or .52 or .64)) item.Zoom = .52;
+            if (item.Left.HasValue && !double.IsFinite(item.Left.Value)) item.Left = null;
+            if (item.Top.HasValue && !double.IsFinite(item.Top.Value)) item.Top = null;
+            return item;
+        }
+        catch (Exception ex) when (ex is IOException or JsonException) { return new(); }
+    }
+    private void SavePreferences()
+    {
+        preferences.Left = Left; preferences.Top = Top; preferences.Zoom = zoom;
+        try
+        {
+            var path = Path.Combine(root, "data", "vpet-window.json"); Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path + ".new", JsonSerializer.Serialize(preferences)); File.Move(path + ".new", path, true);
+        }
+        catch (IOException) { }
+    }
+
     private void KeepOnScreen()
     {
         var area = SystemParameters.WorkArea;
@@ -217,4 +315,13 @@ public sealed class PetWindow : Window, IController
     public void ShowPanel() => _ = OpenPage("home");
     public void ResetPosition() => Dispatcher.Invoke(KeepOnScreen);
     public bool CheckPosition() => true;
+}
+
+public sealed class WindowPreferences
+{
+    public double? Left { get; set; }
+    public double? Top { get; set; }
+    public double Zoom { get; set; } = .52;
+    public bool Quiet { get; set; }
+    public bool Wander { get; set; } = true;
 }

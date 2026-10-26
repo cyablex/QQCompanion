@@ -22,7 +22,9 @@ import game_mode  # noqa: E402
 def pet(engine_setup, tmp_path):  # noqa: F811
     store, cfg, engine, sent, prompts = engine_setup
     atomic_json(tmp_path / 'config/vpet.json', dict(enabled=True))
-    bridge = VPetBridge(SimpleNamespace(store=store, engine=engine), tmp_path)
+    bridge = VPetBridge(SimpleNamespace(store=store, engine=engine, send_private=engine.send), tmp_path)
+    bridge.plugin.enqueue_reply = lambda contact, event: asyncio.create_task(engine.reply(contact))
+    engine.delivery_router = bridge.route_delivery
     original = engine.send
 
     async def route(contact, text, **media):

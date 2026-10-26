@@ -232,7 +232,9 @@ class TurnActions:
             elif row["state"] == "prepared":
                 action = self.store.db.execute("SELECT state FROM actions WHERE id=?", (row["id"] + ":delivery",)).fetchone()
                 if action and action["state"] in {"succeeded", "unknown", "sending"}:
-                    data["message"] = "QQ已确认接收图片。" if action["state"] == "succeeded" else "图片发送结果未确认，不自动重发。"
+                    from message_channels import route
+                    desktop = route(self.store, self.plugin.engine.config_reader(), row['contact'], event_id=row['source_event']) == 'vpet'
+                    data["message"] = ("图片已交给桌宠显示。" if desktop else "QQ已确认接收图片。") if action["state"] == "succeeded" else "图片发送结果未确认，不自动重发。"
                     self.update(row["id"], "succeeded" if action["state"] == "succeeded" else "unknown", **data)
 
     async def resume(self, contact, engine):
@@ -254,7 +256,7 @@ class TurnActions:
 
     async def acknowledge(self, engine, contact, turn, task, text, **media):
         result = dict(action="reply", messages=[text], revision=turn["revision"], read_through=turn["read_through"],
-                      memory_generation=turn.get("memory_generation"), **media)
+                      memory_generation=turn.get("memory_generation"), delivery_event=task.get('source_event'), **media)
         return await engine.deliver(contact, "reply", result, key=task["id"] + (":delivery" if media.get("drawing_file") else ":reply"))
 
     async def execute(self, contact, engine, turn):

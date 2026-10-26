@@ -31,7 +31,7 @@ import vpet_runtime
 from song_previews import SongPreviews
 from song_voice import singing_voice
 
-VERSION = "V5.4"
+VERSION = "V5.5"
 TZ = timezone(timedelta(hours=8))
 FEATURES = (
     "proactive",

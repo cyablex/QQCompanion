@@ -78,6 +78,7 @@ class QQCompanion(Star):
         self.engine.turn_actions = self.groups.engine.turn_actions = self.turn_actions
         self.expression_task = None
         self.vpet = VPetBridge(self)
+        self.engine.delivery_router = self.vpet.route_delivery
 
     async def initialize(self):
         try:
@@ -241,6 +242,13 @@ class QQCompanion(Star):
                 {"ready": False, "checked": time.time(), "reason": type(exc).__name__},
             )
             raise
+
+    def enqueue_reply(self, contact, event):
+        self.pending[contact] = event
+        self.reply_queue.enqueue(contact, event)
+        if contact not in self.workers:
+            self.workers[contact] = asyncio.create_task(self.drain(contact))
+        return self.workers[contact]
 
     async def drain(self, contact):
         try:
@@ -524,10 +532,7 @@ class QQCompanion(Star):
                        dict(event=eid, source_time=source_time, recovered_at=time.time()) if delayed else None)
         if attachments:
             self.media.capture(eid, contact, text[:6000], attachments)
-        self.pending[contact] = eid
-        self.reply_queue.enqueue(contact, eid)
-        if contact not in self.workers:
-            self.workers[contact] = asyncio.create_task(self.drain(contact))
+        self.enqueue_reply(contact, eid)
 
     async def scheduler(self):
         billing = RelayBilling(self.store)
