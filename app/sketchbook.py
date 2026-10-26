@@ -31,6 +31,11 @@ SCENE_GUIDE = """你会用几何图形自由构图画简笔画，不是挑一张
 polygon 用 points=[[x,y],...]；line 用 points；arc 用 box、start、end（角度）；
 bezier 用4、7、10至25个points，每3个点为一段三次曲线的两个控制点和终点，closed=true可闭合填色。
 text 用 at=[x,y]、text（最多30字）、size（12至70）。图形可用fill、stroke和width（1至16）。
+画自己时必须使用普通鲸鱼，不画鲸鱼娘、人脸、蓝发女仆、人体或人形四肢。QQ人设外观不等于这套简笔画的画法。
+鲸鱼必须用完整角色图元：{"type":"whale","box":[左,上,右,下],"facing":"right","mood":"平静","fill":"#75bdea","fill2":"#449ccc"}。
+facing为left/right；mood沿用允许的六种心情。身体、尾鳍、胸鳍和五官由本地统一连接定位，不另画一个悬空头。
+鲸鱼可以自由安排位置、大小、朝向和互动道具，周围场景继续自由构图；别把角色模板当成整张固定画。
+画到自己时加self_portrait=true，且至少有一个whale图元；其它题材不需要。
 text的at是文字左上角，不是基线；文字高度大约占size×1.5个纵向坐标单位，牌子中的文字要留足上下边距。
 颜色为#RRGGBB；无需填充用fill=null。线条使用stroke。可选background2作背景渐变，图形fill2作柔和渐变，shadow=false关阴影；style可选soft（默认）或flat。只有这些图元，不输出代码、SVG或网址。
 画画可以只是因为自己想画、看着舒服或心情开心，不需要知识点、研究进展、寓意或笑点。
@@ -52,6 +57,10 @@ def parse_scene(raw):
     if not all(isinstance(value.get(k), str) and value[k].strip() for k in ("title", "caption")):
         raise ValueError("Drawing needs a title and caption")
     elements = flatten_elements(value.get("elements"))
+    def contains_whale(items):
+        return any(item.get('type') == 'whale' or (item.get('type') == 'group' and contains_whale(item.get('elements', []))) for item in items)
+    if (value.get('self_portrait') is True or '鲸鱼娘' in str(value.get('composition', ''))) and not contains_whale(value['elements']):
+        raise ValueError('Self portraits must use the connected whale primitive')
     if not 3 <= len(elements) <= 100:
         raise ValueError("Invalid drawing element count")
     color = re.compile(r"#[0-9a-fA-F]{6}\Z")
@@ -110,7 +119,9 @@ def flatten_elements(elements, bounds=(0, 0, 1000, 1000), depth=0):
     for item in elements:
         if not isinstance(item, dict):
             raise ValueError("Invalid drawing element")
-        if item.get("type") == "group":
+        if item.get('type') == 'whale':
+            result.extend(flatten_elements([dict(type='group', box=item.get('box'), elements=whale_elements(item))], bounds, depth))
+        elif item.get("type") == "group":
             box = transform(item.get("box"))
             if len(box) != 4 or box[0] >= box[2] or box[1] >= box[3]:
                 raise ValueError("Invalid drawing group bounds")
@@ -128,6 +139,36 @@ def flatten_elements(elements, bounds=(0, 0, 1000, 1000), depth=0):
         if len(result) > 100:
             raise ValueError("Too many drawing primitives")
     return result
+
+
+def whale_elements(item):
+    """One connected silhouette, with face and fins anchored to the same body."""
+    if item.get('facing', 'right') not in {'left', 'right'} or item.get('mood', '平静') not in MOODS:
+        raise ValueError('Invalid whale pose')
+    ink = item.get('stroke', '#30465c')
+    body = [[240,480],[180,390],[90,390],[50,280],[40,420],[110,520],[160,560],
+            [90,550],[35,600],[40,700],[120,710],[200,650],[250,630],
+            [340,830],[780,810],[910,610],[990,350],[760,180],[520,270],[360,300],[260,370],[240,480]]
+    parts = [dict(type='bezier', points=body, closed=True, fill=item.get('fill', '#75bdea'),
+                  fill2=item.get('fill2', '#469dce'), stroke=ink, width=3),
+             dict(type='bezier', points=[[300,620],[450,780],[770,760],[870,590],[720,680],[450,690],[300,620]],
+                  closed=True, fill='#e7f5fc', stroke=None, shadow=False),
+             dict(type='bezier', points=[[550,590],[580,660],[600,740],[680,745],[705,680],[660,610],[620,575]],
+                  closed=True, fill=item.get('fill', '#75bdea'), stroke=ink, width=3, shadow=False),
+             dict(type='ellipse', box=[747,432,788,481], fill='#253c55', stroke=None, shadow=False),
+             dict(type='ellipse', box=[758,440,770,454], fill='#ffffff', stroke=None, shadow=False),
+             dict(type='ellipse', box=[798,491,853,514], fill='#efaeba', stroke=None, shadow=False),
+             dict(type='bezier', points=[[775,528],[805,553],[834,548],[850,522]], stroke=ink, width=3)]
+    if item.get('mood') in {'困倦', '平静'}:
+        parts[3:5] = [dict(type='bezier', points=[[745,460],[760,474],[779,474],[791,458]], stroke=ink, width=4)]
+    if item.get('facing') == 'left':
+        for part in parts:
+            if 'points' in part:
+                part['points'] = [[1000 - x, y] for x, y in part['points']]
+            if 'box' in part:
+                left, top, right, bottom = part['box']
+                part['box'] = [1000 - right, top, 1000 - left, bottom]
+    return parts
 
 
 def gradient(size, top, bottom):
@@ -180,10 +221,13 @@ def render_scene(scene, destination):
                 shadow.paste(mask, (0, 3 * scale))
                 shadow = shadow.filter(ImageFilter.GaussianBlur(4 * scale)).point(lambda p: round(p * .12))
                 image.paste("#435364", (0, 0), shadow)
-            if item.get("fill2"):
+            if item.get("fill2") or scene.get('style', 'soft') == 'soft':
                 bounds = mask.getbbox()
                 if bounds:
-                    image.paste(gradient((bounds[2] - bounds[0], bounds[3] - bounds[1]), fill, item["fill2"]),
+                    top = fill
+                    if not item.get('fill2'):
+                        top = '#' + ''.join(f'{round(int(fill[i:i+2], 16) * .88 + 255 * .12):02x}' for i in (1, 3, 5))
+                    image.paste(gradient((bounds[2] - bounds[0], bounds[3] - bounds[1]), top, item.get('fill2', fill)),
                                 bounds[:2], mask.crop(bounds))
                 fill = None
             draw = ImageDraw.Draw(image)

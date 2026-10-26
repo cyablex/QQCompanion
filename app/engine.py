@@ -927,7 +927,7 @@ class Engine:
             return "记住了，只用于我们这段对话。"
         if text == "/日记":
             rows = self.store.db.execute(
-                "SELECT text,created FROM cm_items WHERE contact=? AND kind='diary' AND status='current' ORDER BY source_id DESC LIMIT 7",
+                "SELECT text,created FROM cm_items WHERE contact=? AND kind IN ('journal','diary') AND status='current' ORDER BY (kind='journal') DESC,created DESC LIMIT 7",
                 (contact,),
             ).fetchall()
             return (

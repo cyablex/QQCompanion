@@ -20,7 +20,7 @@ function setAudio(el: Element | ComponentPublicInstance | null) { audio.value = 
 let timer: ReturnType<typeof setInterval>
 const ready = computed(() => songs.value.filter(s => s.state === 'ready'))
 const preparing = computed(() => songs.value.filter(s => ['queued', 'processing'].includes(s.state)))
-const totalBytes = computed(() => ready.value.reduce((sum, s) => sum + s.bytes, 0))
+const totalBytes = computed(() => ready.value.reduce((sum, s) => sum + s.bytes + (s.master_bytes || 0), 0))
 const visible = computed(() => songs.value.filter(s => `${s.title} ${s.artist}`.toLowerCase().includes(query.value.trim().toLowerCase())))
 function size(bytes: number) { return bytes ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : '—' }
 function duration(seconds: number) { return seconds ? `${Math.floor(seconds / 60)}:${Math.floor(seconds % 60).toString().padStart(2, '0')}` : '—' }
@@ -70,7 +70,7 @@ onUnmounted(() => { clearInterval(timer); audio.value?.pause() })
     <div v-else class="song-table">
       <div class="song-row song-table-head"><span>曲目</span><span>状态</span><span>时长</span><span>大小</span><span>操作</span></div>
       <template v-for="song in visible" :key="song.id">
-        <div class="song-row"><div class="song-name"><strong>{{ song.title }}</strong><span>{{ song.artist }} · 大肥鱼翻唱</span></div><span class="song-state" :class="song.state">{{ state(song) }}</span><span>{{ duration(song.duration) }}</span><span class="muted">{{ size(song.bytes) }}</span><div class="song-actions"><button class="text-button" :disabled="song.state !== 'ready' || !!previewing" @click="listen(song)"><AppIcon name="play" :size="14" />{{ previewing === song.id ? '读取中' : '试听' }}</button><button class="text-button danger" :disabled="deleting" @click="pendingDelete = song">删除</button></div></div>
+        <div class="song-row"><div class="song-name"><strong>{{ song.title }}</strong><span>{{ song.artist }} · 大肥鱼翻唱</span></div><span class="song-state" :class="song.state">{{ state(song) }}</span><span>{{ duration(song.duration) }}</span><span class="muted">{{ size(song.bytes + (song.master_bytes || 0)) }}</span><div class="song-actions"><button class="text-button" :disabled="song.state !== 'ready' || !!previewing" @click="listen(song)"><AppIcon name="play" :size="14" />{{ previewing === song.id ? '读取中' : '试听' }}</button><button class="text-button danger" :disabled="deleting" @click="pendingDelete = song">删除</button></div></div>
         <p v-if="['failed', 'needs_source'].includes(song.state) || (song.state === 'queued' && song.error)" class="song-error">{{ song.error || '这次没有准备完成，重新点歌后可以再试。' }}</p>
         <div v-if="playing === song.id" class="song-player"><audio :ref="setAudio" :src="preview" controls preload="metadata" /><span class="tiny muted">仅在本机试听，不发送 QQ 消息。</span></div>
       </template>

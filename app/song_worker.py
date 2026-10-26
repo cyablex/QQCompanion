@@ -108,13 +108,13 @@ class SongWorker:
         ref = wav.mean(0)
         mean, std = ref.mean(), ref.std().clamp_min(1e-6)
         with torch.inference_mode():
-            sources = apply_model(model, ((wav - mean) / std)[None], device="cuda", shifts=1, split=True,
-                                  overlap=0.25, progress=True, num_workers=0)[0].cpu()
+            sources = apply_model(model, ((wav - mean) / std)[None], device="cuda", shifts=2, split=True,
+                                  overlap=0.5, progress=True, num_workers=0)[0].cpu()
         sources = sources * std + mean
         vocals = sources[model.sources.index("vocals")].numpy().T
         backing = sources.sum(0).numpy().T - vocals
-        sf.write(str(self.work / "vocals.wav"), np.mean(vocals, axis=1), rate, subtype="PCM_16")
-        sf.write(str(self.work / "backing.wav"), backing, rate, subtype="PCM_16")
+        sf.write(str(self.work / "vocals.wav"), np.mean(vocals, axis=1), rate, subtype="FLOAT")
+        sf.write(str(self.work / "backing.wav"), backing, rate, subtype="FLOAT")
         del model, sources, wav, ref, samples
         gc.collect()
         torch.cuda.empty_cache()
@@ -137,10 +137,12 @@ class SongWorker:
         peak = float(np.max(np.abs(mixed)))
         if peak > 0.98:
             mixed *= 0.98 / peak
-        sf.write(str(self.work / "mix.wav"), mixed, rate, subtype="PCM_16")
+        sf.write(str(self.work / "mix.wav"), mixed, rate, subtype="PCM_24")
         self.output.parent.mkdir(parents=True, exist_ok=True)
+        master = self.output.with_suffix('.flac')
+        sf.write(str(master), mixed, rate, subtype='PCM_24', format='FLAC')
         self.command([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-i", str(self.work / "mix.wav"),
-                      "-codec:a", "libmp3lame", "-b:a", "192k", str(self.output)])
+                      "-codec:a", "libmp3lame", "-b:a", "320k", str(self.output)])
         return count / rate
 
     def run(self):
@@ -160,8 +162,9 @@ class SongWorker:
             self.progress("用大肥鱼的音色学唱")
             voice_cfg = dict(read_settings(), **self.metadata.get("voice_options", {}))
             voice = singing_voice(voice_cfg)
-            self.command([sys.executable, "-X", "utf8", "-u", str(SEED / "companion_svc.py"), "--source", str(self.work / "vocals.wav"),
+            self.command([sys.executable, "-X", "utf8", "-u", str(ROOT / "integrations/seedvc/companion_svc.py"), "--source", str(self.work / "vocals.wav"),
                           "--target", voice["reference"], "--pitch-mode", voice["pitch_mode"], "--shift", str(voice["shift"]),
+                          "--steps", str(voice['steps']),
                           "--output", str(self.work / "converted")])
             converted = list((self.work / "converted").glob("*.wav"))
             if len(converted) != 1:
@@ -175,6 +178,7 @@ class SongWorker:
             self.progress("已准备好")
         except Exception as exc:
             self.output.unlink(missing_ok=True)
+            self.output.with_suffix('.flac').unlink(missing_ok=True)
             safe_error = (str(exc)[:300] if isinstance(exc, (ValueError, InterruptedError, TimeoutError))
                           else "本机没能完成这首歌的制作，请稍后再试或换一个音源。")
             state = ("paused" if isinstance(exc, InterruptedError) else "retry" if isinstance(exc, SourceTemporary)

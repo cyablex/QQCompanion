@@ -1,6 +1,7 @@
 """Read existing private diary evidence and shared projects on a local calendar."""
 
 import re
+import json
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
@@ -37,14 +38,30 @@ class ExperienceCalendar:
 
         if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cm_items'").fetchone():
             rows = self.db.execute(
-                "SELECT id,kind,text,evidence,source_id,source_role,created FROM cm_items "
-                "WHERE contact=? AND kind IN ('diary','episode') AND status='current' AND created>=? AND created<? "
+                "SELECT id,kind,key,text,evidence,source_id,source_role,created FROM cm_items "
+                "WHERE contact=? AND kind IN ('journal','diary','episode') AND status='current' AND created>=? AND created<? "
                 "ORDER BY created,id", (self.cfg['owner_qq'], start.timestamp(), end.timestamp()))
             for row in rows:
                 # Render original evidence, never turn an old generated summary into a new fact.
                 source = self.db.execute('SELECT role,text FROM messages WHERE id=? AND contact=?',
                                          (row['source_id'], self.cfg['owner_qq'])).fetchone()
                 if not source or not row['evidence'] or row['evidence'] not in source['text']:
+                    continue
+                if row['kind'] == 'journal':
+                    metadata = self.db.execute('SELECT value FROM state WHERE key=?',
+                        (f"journal_sources:{self.cfg['owner_qq']}:{row['key']}",)).fetchone()
+                    if not metadata:
+                        continue
+                    metadata = json.loads(metadata[0])
+                    ids = metadata.get('ids', [])
+                    if not ids or any(not self.db.execute('SELECT 1 FROM messages WHERE contact=? AND id=?',
+                        (self.cfg['owner_qq'], ident)).fetchone() for ident in ids):
+                        continue
+                    add('journal:' + str(row['id']), 'diary', metadata.get('title', '这一天'), row['text'], row['created'],
+                        speaker='大肥鱼', authored=True)
+                    continue
+                if row['kind'] == 'diary' and self.db.execute("SELECT 1 FROM cm_items WHERE contact=? AND kind='journal' AND key=? AND status='current'",
+                    (self.cfg['owner_qq'], datetime.fromtimestamp(row['created'], TZ).strftime('%Y-%m-%d'))).fetchone():
                     continue
                 title = '相处日记' if row['kind'] == 'diary' else '相处片段'
                 add('memory:' + str(row['id']), row['kind'], title, row['evidence'], row['created'],

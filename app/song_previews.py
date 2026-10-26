@@ -102,12 +102,21 @@ class SongPreviews:
         archive.mkdir(parents=True)
         old = archive / 'song.mp3'
         shutil.copy2(song['file'], old)
+        old_master = Path(song['file']).with_suffix('.flac')
+        if old_master.is_file():
+            shutil.copy2(old_master, archive / 'song.flac')
         atomic_json(archive / 'job.json', dict(label='替换前的成品', created=time.time()))
         atomic_json(archive / 'result.json', dict(state='ready', file=str(old.resolve()), duration=song['duration']))
         destination = self.library.audio_path(song_id)
         pending = destination.with_suffix('.new.mp3')
         shutil.copy2(source, pending)
         os.replace(pending, destination)
+        master = source.with_suffix('.flac')
+        if master.is_file():
+            shutil.copy2(master, destination.with_suffix('.new.flac'))
+            os.replace(destination.with_suffix('.new.flac'), destination.with_suffix('.flac'))
+        else:
+            destination.with_suffix('.flac').unlink(missing_ok=True)
         self.db.execute("UPDATE songs SET state='ready',duration=?,bytes=?,progress='已采用调整试听',updated=? WHERE id=?",
                         (result['duration'], destination.stat().st_size, time.time(), song_id))
         return dict(adopted=version, previous=old_version)

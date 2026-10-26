@@ -3,11 +3,12 @@
 import argparse
 import json
 import os
+import sys
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(os.environ.get('SEEDVC_ROOT', Path(__file__).resolve().parents[2].parent / 'SeedVC'))
 
 
 def main():
@@ -15,7 +16,7 @@ def main():
     parser.add_argument("--source", type=Path, required=True, help="已有旋律和歌词的清唱/歌曲干声，不能用朗读代替")
     parser.add_argument("--target", type=Path, default=ROOT.parent / "GPTSoVITS/reference/yui/everyday.wav")
     parser.add_argument("--output", type=Path, default=ROOT / "outputs")
-    parser.add_argument("--steps", type=int, choices=range(10, 61), default=35)
+    parser.add_argument("--steps", type=int, choices=range(10, 61), default=50)
     parser.add_argument("--shift", type=int, choices=range(-12, 13), default=0)
     parser.add_argument("--pitch-mode", choices=("reference_octave", "preserve"), default="reference_octave")
     args = parser.parse_args()
@@ -25,6 +26,8 @@ def main():
     if config.exists() and json.loads(config.read_text(encoding="utf-8")).get("game_mode"):
         parser.error("游戏模式已开启，请先关闭游戏模式")
     os.chdir(ROOT)
+    sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     for key, value in urllib.request.getproxies().items():
         if key in {"http", "https"}:
             os.environ.setdefault(key.upper() + "_PROXY", value)

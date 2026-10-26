@@ -37,6 +37,7 @@ from local_voice import LocalVoice, allowed_file as voice_allowed_file  # noqa: 
 from singing import Singing  # noqa: E402
 from turn_actions import TurnActions  # noqa: E402
 from vpet_bridge import VPetBridge, DELIVERY  # noqa: E402
+from daily_diary import DailyDiary  # noqa: E402
 
 
 class QQCompanion(Star):
@@ -78,6 +79,7 @@ class QQCompanion(Star):
         self.engine.turn_actions = self.groups.engine.turn_actions = self.turn_actions
         self.expression_task = None
         self.vpet = VPetBridge(self)
+        self.daily_diary = DailyDiary(self.store)
         self.engine.delivery_router = self.vpet.route_delivery
 
     async def initialize(self):
@@ -342,7 +344,10 @@ class QQCompanion(Star):
 
     async def consolidate_memory(self, contact):
         try:
-            await self.engine.memory.consolidate(contact, self.engine, read_settings())
+            cfg = read_settings()
+            await self.engine.memory.consolidate(contact, self.engine, cfg)
+            if contact == cfg['owner_qq']:
+                await self.daily_diary.write(self.engine, cfg)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

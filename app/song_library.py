@@ -93,8 +93,12 @@ class SongLibrary:
         return Path(file).resolve() == expected and expected.is_file() and song["file"] == str(expected)
 
     def list(self):
-        return [dict(r) for r in self.db.execute("SELECT id,title,artist,state,progress,created,updated,duration,bytes,error,source_url "
+        rows = [dict(r) for r in self.db.execute("SELECT id,title,artist,state,progress,created,updated,duration,bytes,error,source_url "
                                                "FROM songs WHERE state!='deleted' ORDER BY updated DESC")]
+        for row in rows:
+            master = self.audio_path(row['id']).with_suffix('.flac')
+            row['master_bytes'] = master.stat().st_size if master.is_file() else 0
+        return rows
 
     def delete(self, song_id):
         song = self.get(song_id)
@@ -111,4 +115,5 @@ class SongLibrary:
             raise
         # Only the generated catalogue file is removed; source files are untouched.
         self.audio_path(song_id).unlink(missing_ok=True)
+        self.audio_path(song_id).with_suffix('.flac').unlink(missing_ok=True)
         return True

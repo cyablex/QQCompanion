@@ -30,7 +30,7 @@ export interface Preferences {
 export interface Connection { base_url: string; model: string }
 export interface Song {
   id: string; title: string; artist: string; state: string; progress: string;
-  created: number; updated: number; duration: number; bytes: number; error: string; source_url: string;
+  created: number; updated: number; duration: number; bytes: number; master_bytes?: number; error: string; source_url: string;
 }
 export interface Drawing {
   id: string; scope: string; title: string; caption: string; created: number; bytes: number; thumbnail: string;

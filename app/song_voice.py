@@ -19,4 +19,4 @@ def singing_voice(cfg, root=ROOT):
     path = Path(reference).resolve()
     if not path.is_file() or path.suffix.lower() != ".wav":
         raise ValueError("请选择可读取的 WAV 参考音色。")
-    return dict(reference=str(path), pitch_mode=mode, shift=shift, steps=35)
+    return dict(reference=str(path), pitch_mode=mode, shift=shift, steps=50)

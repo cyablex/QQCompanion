@@ -17,6 +17,26 @@ from sketchbook import parse_scene, render_scene, Sketchbook
 from store import Store
 
 
+def test_connected_whale_renders_inside_its_group_with_visible_shading(tmp_path):
+    scene = parse_scene(json.dumps(dict(action='draw', self_portrait=True, title='鲸鱼', caption='安静的小鲸鱼',
+        background='#ffffff', elements=[dict(type='whale', box=[100,200,900,800], facing='left', mood='开心')]), ensure_ascii=False))
+    file = tmp_path / 'whale.png'
+    render_scene(scene, file)
+    image = Image.open(file).convert('RGB')
+    assert image.size == (960, 640)
+    assert image.getpixel((20, 20)) == (255,255,255)
+    # The body is visible and a range of blue shades is actually rendered.
+    blues = {pixel for pixel in image.getdata() if pixel[2] > pixel[0] + 40 and pixel[1] > pixel[0]}
+    assert len(blues) > 40
+
+
+def test_self_portrait_cannot_fall_back_to_disconnected_humanoid_parts():
+    with pytest.raises(ValueError, match='connected whale'):
+        parse_scene(json.dumps(dict(action='draw', self_portrait=True, title='画自己', caption='头像', elements=[
+            dict(type='ellipse',box=[100,100,300,300]), dict(type='ellipse',box=[500,500,800,800]),
+            dict(type='line',points=[[100,400],[200,500]])])))
+
+
 @pytest.fixture
 def art(tmp_path, monkeypatch):
     (tmp_path / "data").mkdir()
