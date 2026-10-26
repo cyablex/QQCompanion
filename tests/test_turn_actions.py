@@ -312,6 +312,21 @@ async def test_guest_cannot_write_owner_creative_project(turns):
     assert not e.store.db.execute("SELECT 1 FROM state WHERE key LIKE 'creative:%'").fetchone()
 
 
+@pytest.mark.asyncio
+async def test_shared_video_link_is_saved_by_chat_action_and_not_opened(turns):
+    e = turns
+    from creative_projects import CreativeProjects
+    projects = CreativeProjects(e.store.db, e.cfg, e.root)
+    project = projects.create('一起看的片段', 'reading')
+    incoming(e, '把 https://example.org/watch 留进这个项目，记下看到12秒')
+    task(e, 'creative.link', project_id=project['id'], title='共同片段',
+         url='https://example.org/watch', note='看到12秒')
+    await e.engine.reply('12345')
+    assert state(e) == 'succeeded'
+    assert projects.get(project['id'])['links'][0]['note'] == '看到12秒'
+    assert e.sent and '已经留在' in e.sent[-1][1]
+
+
 @pytest.mark.parametrize("bad", [dict(type="song.choose", song_id="x", contact="11111"),
                                  dict(type="exec", command="echo test"), dict(type=["song.choose"])])
 def test_plan_rejects_targets_code_and_wrong_type(turns, bad):

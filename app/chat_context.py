@@ -106,7 +106,7 @@ class ChatPromptBuilder:
                 + dynamic_context
             )
         if not public and contact == cfg['owner_qq']:
-            system += CreativeProjects(self.store.db, cfg).context(contact)
+            system += CreativeProjects(self.store.db, cfg).context(contact, activity_query)
         if plain_reply:
             system += (
                 "\n【本轮经历核对】人设中的吃饭、饭凉了、发呆或画画小故事只是性格例子，不代表刚才发生过。"

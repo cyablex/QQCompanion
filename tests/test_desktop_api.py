@@ -43,6 +43,30 @@ def form(api):
     return api.get_settings()["data"]["values"]
 
 
+def test_calendar_and_link_bridge_reuses_saved_owner_projects(desktop, monkeypatch):
+    from datetime import datetime
+    from store import Store, TZ
+    from creative_projects import CreativeProjects
+    api, root = desktop
+    store = Store(root / 'data/companion.sqlite3')
+    cfg = settings.read_settings()
+    projects = CreativeProjects(store.db, cfg, root)
+    project = projects.create('一起看的视频', 'reading')
+    saved = api.change_creative_project('link', dict(id=project['id'], title='片段', url='https://example.org/watch'))
+    assert saved['ok']
+    launched = []
+    monkeypatch.setattr(desktop_api.os, 'startfile', launched.append)
+    assert not api.open_experience_link(project['id'], 'missing')['ok']
+    assert not launched
+    link = saved['data']['links'][0]
+    assert api.open_experience_link(project['id'], link['id'])['ok']
+    assert launched == ['https://example.org/watch']
+    month = api.get_experience_calendar(datetime.now(TZ).strftime('%Y-%m'))
+    assert month['ok'] and len(month['data']['events']) == 2
+    assert not api.get_experience_calendar('bad')['ok']
+    store.db.close()
+
+
 def test_custom_window_buttons_and_resize_do_not_touch_backend(desktop, monkeypatch):
     api, _ = desktop
     window = SimpleNamespace(native=SimpleNamespace(WindowState="Normal"))

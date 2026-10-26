@@ -1,6 +1,7 @@
 <script setup lang="ts">
 defineProps<{ name: string; size?: number }>()
 const paths: Record<string, string> = {
+  calendar: 'M4 5h16v16H4ZM8 3v4m8-4v4M4 10h16M8 14h2m4 0h2M8 18h2',
   minimize: 'M5 12h14', maximize: 'M5 5h14v14H5Z', restore: 'M8 8h11v11H8ZM5 15H4V4h11v1',
   home: 'm3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z',
   settings: 'M4 7h9m4 0h3M4 17h3m4 0h9M13 4v6M7 14v6',

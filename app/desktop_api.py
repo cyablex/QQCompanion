@@ -26,10 +26,11 @@ from song_library import SongLibrary
 from budget_breakdown import read_budget, period_totals
 from art_gallery import ArtGallery
 from creative_projects import CreativeProjects
+from experience_calendar import ExperienceCalendar
 from song_previews import SongPreviews
 from song_voice import singing_voice
 
-VERSION = "V5.2"
+VERSION = "V5.3"
 TZ = timezone(timedelta(hours=8))
 FEATURES = (
     "proactive",
@@ -104,6 +105,27 @@ class DesktopAPI:
         self._window = window
 
     @result
+    def get_experience_calendar(self, month, query=''):
+        with sqlite3.connect((ROOT / 'data/companion.sqlite3').as_uri() + '?mode=ro', uri=True, timeout=2) as db:
+            db.row_factory = sqlite3.Row
+            return ExperienceCalendar(db, read_settings(), ROOT).month(month, query)
+
+    @result
+    def open_experience_link(self, project_id, link_id):
+        with sqlite3.connect((ROOT / 'data/companion.sqlite3').as_uri() + '?mode=ro', uri=True, timeout=2) as db:
+            db.row_factory = sqlite3.Row
+            project = CreativeProjects(db, read_settings(), ROOT).get(str(project_id))
+            link = next((item for item in project.get('links', []) if item['id'] == link_id), None)
+            if not link:
+                raise ValueError('没有找到这条收藏链接。')
+            from urllib.parse import urlsplit
+            parts = urlsplit(link['url'])
+            if parts.scheme not in {'https', 'http'} or not parts.hostname or parts.username or parts.password:
+                raise ValueError('这条链接不能打开。')
+            os.startfile(link['url'])
+            return dict(opened=True)
+
+    @result
     def get_creative_projects(self):
         with sqlite3.connect((ROOT / 'data/companion.sqlite3').as_uri() + '?mode=ro', uri=True, timeout=2) as db:
             db.row_factory = sqlite3.Row
@@ -130,6 +152,8 @@ class DesktopAPI:
                 project = projects.note(ident, data.get('text'))
             elif action == 'attach':
                 project = projects.attach(ident, data.get('kind'), data.get('asset_id'), data.get('scope', ''))
+            elif action == 'link':
+                project = projects.link(ident, data.get('title', ''), data.get('url', ''), data.get('note', ''))
             else:
                 raise ValueError('项目操作无效。')
             return projects.view(project)

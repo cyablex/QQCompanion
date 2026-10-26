@@ -25,6 +25,7 @@ FIELDS = {
     "creative.create": {"title", "kind"}, "creative.note": {"project_id", "text"},
     "creative.update": {"project_id", "stage", "next_step"},
     "creative.attach": {"project_id", "kind", "asset_id", "scope"},
+    "creative.link": {"project_id", "title", "url", "note"},
 }
 STATES = dict(queued="已登记待执行", running="正在执行，尚无完成回执", waiting="等待条件恢复或后台完成",
               prepared="已生成图片，等待发送", awaiting_input="等待补充信息", awaiting_source="等待音源链接",
@@ -111,6 +112,8 @@ class TurnActions:
             "主人私聊还可用creative.create(title,kind为song/comic/reading/other)，creative.note(project_id,text)，"
             "creative.update(project_id,stage为idea/preview/adjust/finished,next_step)，"
             "creative.attach(project_id,kind为song/drawing,asset_id,scope歌曲填空/图片填实际范围)。"
+            "creative.link(project_id,title,url,note可空)保存用户提供的网页或视频链接及感受，不抓取网页；"
+            "url必须来自真实用户提供或已核验的来源，不能编造链接，也不能把保存链接说成看完内容。"
             "仅在主人要建立、记录、调整项目或你有具体创作提议需要保存时使用；引用实际项目和作品id，不凭空造作品。"
             "tasks最多8项，目标由真实聊天通道绑定，不能添加联系人、账号、接口名、代码或权限字段。"
             "song.choose仅限对方明确把歌曲或版本的选择交给你，不能因为曲库只有一首、你认识原唱就自行选。"
@@ -340,6 +343,9 @@ class TurnActions:
                 project = projects.note(action.get('project_id'), action.get('text'), 'companion', task['id'])
             elif kind == 'creative.update':
                 project = projects.update(action.get('project_id'), action.get('stage'), action.get('next_step', ''))
+            elif kind == 'creative.link':
+                project = projects.link(action.get('project_id'), action.get('title', ''), action.get('url', ''),
+                                        action.get('note', ''), task['id'])
             else:
                 project = projects.attach(action.get('project_id'), action.get('kind'), action.get('asset_id'), action.get('scope', ''))
             note = f"已经留在《{project['title']}》里，下次可以接着做。"
