@@ -54,7 +54,12 @@ def set_game_mode(enabled, cfg=None):
     cfg = dict(read_settings() if cfg is None else cfg)
     cfg.update(game_mode=bool(enabled), revision=cfg["revision"] + 1)
     atomic_json(ROOT / "config/user.json", cfg)
-    return close_local_voice() if enabled else dict(stopped=[], denied=[])
+    import vpet_runtime
+    if enabled:
+        outcome = close_local_voice()
+        pet = vpet_runtime.stop(ROOT)
+        return dict(stopped=outcome['stopped'] + pet['stopped'], denied=outcome['denied'] + pet['denied'])
+    return vpet_runtime.reconcile(ROOT, cfg)
 
 
 if __name__ == "__main__":

@@ -73,6 +73,26 @@ def test_resources_restore_refuses_existing_components(resources, tmp_path):
     assert (resources / "runtime/python.exe").read_bytes() == b"core interpreter"
 
 
+def test_optional_pet_resources_restore_without_enabling_or_copying_local_token(resources, tmp_path):
+    host = resources / 'vpet/host/DafeiyuPet.exe'
+    host.parent.mkdir(parents=True)
+    host.write_bytes(b'prepared host')
+    assets = resources / 'vpet/assets/vup/example.png'
+    assets.parent.mkdir(parents=True)
+    assets.write_bytes(b'demonstration asset')
+    (resources / 'config').mkdir()
+    (resources / 'config/vpet.json').write_text('{"enabled":true}')
+    (resources / 'config/vpet-bridge.token').write_text('private-local-token')
+    archive = tmp_path / 'with-pet.dfyresources'
+    export_resources(resources, archive, PASSWORD)
+    target = tmp_path / 'new-pet/QQCompanion'
+    restore_resources(archive, target, PASSWORD)
+    assert (target / 'vpet/host/DafeiyuPet.exe').read_bytes() == b'prepared host'
+    assert (target / 'vpet/assets/vup/example.png').read_bytes() == b'demonstration asset'
+    assert not (target / 'config/vpet.json').exists()
+    assert not (target / 'config/vpet-bridge.token').exists()
+
+
 def test_wrong_resources_password_leaves_destination_uninstalled(resources, tmp_path):
     archive = tmp_path / "offline.dfyresources"
     export_resources(resources, archive, PASSWORD)

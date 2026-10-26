@@ -30,3 +30,5 @@ jobs:
         run: |
           npm ci --prefix frontend
           npm run build --prefix frontend
+      - name: Build optional VPet Core host
+        run: dotnet build integrations/vpet/DafeiyuPet.csproj -c Release

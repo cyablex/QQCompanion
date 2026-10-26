@@ -36,6 +36,7 @@ from store import BudgetExceeded, Store  # noqa: E402
 from local_voice import LocalVoice, allowed_file as voice_allowed_file  # noqa: E402
 from singing import Singing  # noqa: E402
 from turn_actions import TurnActions  # noqa: E402
+from vpet_bridge import VPetBridge, DELIVERY  # noqa: E402
 
 
 class QQCompanion(Star):
@@ -76,8 +77,13 @@ class QQCompanion(Star):
         self.turn_actions = TurnActions(self)
         self.engine.turn_actions = self.groups.engine.turn_actions = self.turn_actions
         self.expression_task = None
+        self.vpet = VPetBridge(self)
 
     async def initialize(self):
+        try:
+            self.vpet.start()
+        except OSError as exc:
+            logger.warning('VPet bridge unavailable: %s', type(exc).__name__)
         self.loop_task = asyncio.create_task(self.scheduler())
         self.singing_task = asyncio.create_task(self.singing.run())
         logger.info("QQ companion loaded; actual sending is controlled by local policy")
@@ -162,6 +168,9 @@ class QQCompanion(Star):
             )
 
     async def send_private(self, contact, text, sticker_id=None, image_file=None, voice_file=None, song_file=None, song_id=None):
+        if DELIVERY.get() is not None:
+            media = dict(sticker_id=sticker_id, image_file=image_file, voice_file=voice_file, song_file=song_file)
+            return await self.vpet.deliver(contact, text, **{key: value for key, value in media.items() if value})
         try:
             await self.check_messaging()
         except Exception as exc:
@@ -745,6 +754,8 @@ class QQCompanion(Star):
             self.store.set("own_space_error", type(exc).__name__)
 
     async def terminate(self):
+        if getattr(self, 'vpet', None):
+            await self.vpet.close()
         await self.groups.close()
         tasks = (
             list(self.workers.values())

@@ -10,6 +10,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from public_release import audit_tree, sanitise  # noqa: E402
 
 
+def test_export_includes_animation_runtime_and_vpet_sources_but_not_build_outputs(tmp_path):
+    from public_release import sources
+    for name in ('frontend/public/startup/splash.js', 'integrations/vpet/Program.cs',
+                 'integrations/vpet/DafeiyuPet.csproj', 'integrations/vpet/obj/generated.cs',
+                 'integrations/vpet/bin/runtime.json'):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('source', encoding='utf-8')
+    names = {name for _, name in sources(tmp_path)}
+    assert 'frontend/public/startup/splash.js' in names
+    assert 'integrations/vpet/Program.cs' in names
+    assert 'integrations/vpet/DafeiyuPet.csproj' in names
+    assert not any('/obj/' in name or '/bin/' in name for name in names)
+
+
 def test_public_sanitisation_replaces_identifiers_consistently_and_drops_old_sys_path():
     source = 'sys.path.insert(0, r"D:\\Private\\app")\nowner = "777777777"\nassert owner == "777777777"\n'
     clean = sanitise(source, {"777777777": "900000001"})

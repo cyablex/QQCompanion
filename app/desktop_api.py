@@ -27,10 +27,11 @@ from budget_breakdown import read_budget, period_totals
 from art_gallery import ArtGallery
 from creative_projects import CreativeProjects
 from experience_calendar import ExperienceCalendar
+import vpet_runtime
 from song_previews import SongPreviews
 from song_voice import singing_voice
 
-VERSION = "V5.3"
+VERSION = "V5.4"
 TZ = timezone(timedelta(hours=8))
 FEATURES = (
     "proactive",
@@ -103,6 +104,33 @@ class DesktopAPI:
 
     def _attach_window(self, window):
         self._window = window
+
+    @result
+    def get_vpet_status(self):
+        return vpet_runtime.status(ROOT, read_settings())
+
+    @result
+    def set_vpet_enabled(self, enabled):
+        if type(enabled) is not bool:
+            raise ValueError('桌宠开关无效。')
+        cfg = read_settings()
+        if enabled:
+            if not vpet_runtime.executable(ROOT).is_file():
+                raise ValueError('桌宠环境还未准备好，请先运行准备桌宠环境。')
+            if (ROOT / 'config/offline-development.json').exists():
+                raise ValueError('离线恢复期间不会启用桌宠互动。')
+            if not valid_qq(cfg['owner_qq']) or not valid_qq(cfg['bot_qq']):
+                raise ValueError('请先设置主号与小号，再启用桌宠。')
+            services.start(['bot', 'watchdog'])
+        return vpet_runtime.set_enabled(enabled, ROOT, cfg)
+
+    @result
+    def pop_navigation(self):
+        path = ROOT / 'data/desktop-navigation.json'
+        value = read_json(path)
+        if path.exists():
+            path.unlink()
+        return value.get('page') if value.get('page') in {'home', 'creative', 'calendar', 'songbook'} and time.time() - value.get('created', 0) < 30 else None
 
     @result
     def get_experience_calendar(self, month, query=''):
@@ -600,6 +628,7 @@ class DesktopAPI:
                     services.start(["bot", "watchdog"])
                 else:
                     game_mode.close_local_voice()
+                    vpet_runtime.stop(ROOT)
             else:
                 raise ValueError("不支持的操作。")
             return dict(action=action)

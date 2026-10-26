@@ -22,6 +22,9 @@ TEXT_SUFFIXES = {
     ".toml",
     ".yml",
     ".yaml",
+    ".js",
+    ".cs",
+    ".csproj",
 }
 SECRET = re.compile(
     r"\b(?:ghp_|github_pat_)[A-Za-z0-9_]{20,}\b|\bsk-[A-Za-z0-9]{20,}\b"
@@ -86,7 +89,7 @@ def private_values(root):
             replacements[identity[1]] = "本机用户"
     forbidden = set(replacements)
     forbidden.update({str(root), str(root).replace("\\", "/")})
-    for name in ("onebot.token",):
+    for name in ("onebot.token", "vpet-bridge.token"):
         path = root / "config" / name
         if path.exists() and len(path.read_text().strip()) >= 12:
             forbidden.add(path.read_text().strip())
@@ -146,6 +149,8 @@ def sources(root):
                     "node_modules",
                     ".pytest_cache",
                     ".ruff_cache",
+                    "bin",
+                    "obj",
                 }
                 for part in path.parts
             ):

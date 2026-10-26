@@ -1,14 +1,14 @@
 # 桌宠方案调研与接入方向
 
-调研日期：2026-10-26。本页是方案，桌宠尚未接入本项目。
+调研日期：2026-10-26。V5.4 已采用 VPet 官方核心库完成首阶段宿主与现有后台接入，使用和当前范围见 [桌宠说明](VPET.md)。下表保留其他路线的比较。
 
 ## 现成方案
 
 | 方案 | 可参考或复用的部分 | 接入本项目的考虑 |
 |---|---|---|
-| [Open-LLM-VTuber Web](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber-Web) | 独立 Web/Electron 前端、Live2D、桌宠窗口和语音播放交互 | 优先验证显示层与协议适配，不部署其另一套聊天、记忆或模型后端。它仍需适配，不能直接填相同 API Key 就认为已共用大脑。 |
+| [Open-LLM-VTuber Web](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber-Web) | 独立 Web/Electron 前端、Live2D、桌宠窗口和语音播放交互 | 偏重语音与形象的备选路线；仍需协议适配，不能直接填相同 API Key 就认为已共用大脑。 |
 | [AIRI](https://github.com/moeru-ai/airi) | Live2D/VRM 展示、眨眼与视线、桌面形态；仓库包含可复用的前端模块 | 可作为表现层参考，但项目覆盖面大，需要先验证模块依赖和构建成本。 |
-| [VPet](https://github.com/LorisYounger/VPet) | Windows 桌面动作、拖动、互动与 MOD；提供 WPF 核心库及二次开发说明 | 适合重视走动和互动的路线；本项目当前是 Python + Vue，需要额外的 WPF 宿主或插件桥接。 |
+| [VPet](https://github.com/LorisYounger/VPet) | Windows 桌面动作、拖动、互动与 MOD；提供 WPF 核心库及二次开发说明 | 已采用。增加单独的 WPF 宿主，第一阶段通过限定本机接口把触摸与提起送入现有后台。 |
 
 项目自己的功能与素材许可应分别核对；引入 Live2D 时还需核对运行库、角色模型和动作的使用条件。现有表情包不是可以直接导入的 Live2D 模型，蓝发女仆形象需要相应模型或逐帧素材。
 

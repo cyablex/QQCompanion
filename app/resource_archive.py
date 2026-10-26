@@ -62,6 +62,8 @@ def resource_files(root):
         ),
         (base311, "python311", set()),
     ]
+    if (root / 'vpet').is_dir():
+        sources.append((root / 'vpet', 'main/vpet', set()))
     for folder, prefix, excluded in sources:
         if not folder.is_dir():
             raise ValueError("运行资源缺失，不能生成完整离线资源包。")
@@ -136,6 +138,7 @@ def restore_resources(backup, root, password, progress=None):
         "main/napcat": root / "napcat",
         "main/models": root / "models",
         "main/frontend/dist": root / "frontend/dist",
+        "main/vpet": root / "vpet",
         "voice/app": parent / "GPTSoVITS/app",
         "voice/launch.py": parent / "GPTSoVITS/launch.py",
         "singing": parent / "SeedVC",
@@ -202,6 +205,8 @@ def restore_resources(backup, root, password, progress=None):
         try:
             for prefix, target in targets.items():
                 source = Path(staging) / prefix
+                if prefix == 'main/vpet' and not source.exists():
+                    continue
                 if not source.exists():
                     raise ValueError("离线资源包缺少必要组件。")
                 target.parent.mkdir(parents=True, exist_ok=True)

@@ -43,6 +43,18 @@ def form(api):
     return api.get_settings()["data"]["values"]
 
 
+def test_pet_navigation_is_one_shot_and_old_requests_are_ignored(desktop):
+    api, root = desktop
+    path = root / 'data/desktop-navigation.json'
+    settings.atomic_json(path, dict(page='calendar', created=time.time()))
+    assert api.pop_navigation()['data'] == 'calendar'
+    assert api.pop_navigation()['data'] is None
+    settings.atomic_json(path, dict(page='creative', created=time.time() - 60))
+    assert api.pop_navigation()['data'] is None
+    settings.atomic_json(path, dict(page='file:///private', created=time.time()))
+    assert api.pop_navigation()['data'] is None
+
+
 def test_calendar_and_link_bridge_reuses_saved_owner_projects(desktop, monkeypatch):
     from datetime import datetime
     from store import Store, TZ

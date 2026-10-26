@@ -36,6 +36,11 @@ def main():
         while True:
             processes = matching()
             now = time.time()
+            try:
+                from vpet_runtime import reconcile
+                reconcile(ROOT, read_settings())
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                print('VPet supervision failed:', type(exc).__name__, flush=True)
             for name in ["voice", "setup", "bot", "login", "qq"]:
                 if name == "qq" and qq_webui_running():
                     continue

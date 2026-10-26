@@ -10,6 +10,7 @@ import SongbookPage from './pages/SongbookPage.vue'
 import GalleryPage from './pages/GalleryPage.vue'
 import CreativePage from './pages/CreativePage.vue'
 import CalendarPage from './pages/CalendarPage.vue'
+import PetPage from './pages/PetPage.vue'
 import { useCompanion } from './composables/useCompanion'
 import { call } from './services/api'
 
@@ -22,7 +23,7 @@ watch(page, value => {
   document.querySelector('.main-area')?.scrollTo(0, 0)
   if (value === 'home' && !entered.value) opening.value = true
 }, { flush: 'post' })
-const nav = [{ id: 'home', label: '总览', icon: 'home', en: 'OVERVIEW' }, { id: 'creative', label: '共同经历', icon: 'gallery', en: 'OUR SHARED SPACE' }, { id: 'calendar', label: '大肥鱼日历', icon: 'calendar', en: 'DAYS TO REMEMBER' }, { id: 'songbook', label: '曲库', icon: 'music', en: 'SONGBOOK' }, { id: 'gallery', label: '画册', icon: 'gallery', en: 'GALLERY' }, { id: 'settings', label: '偏好设置', icon: 'settings', en: 'PREFERENCES' }, { id: 'connection', label: '模型连接', icon: 'connection', en: 'CONNECTIONS' }]
+const nav = [{ id: 'home', label: '总览', icon: 'home', en: 'OVERVIEW' }, { id: 'creative', label: '共同经历', icon: 'gallery', en: 'OUR SHARED SPACE' }, { id: 'calendar', label: '大肥鱼日历', icon: 'calendar', en: 'DAYS TO REMEMBER' }, { id: 'pet', label: '桌宠', icon: 'pet', en: 'ON YOUR DESKTOP' }, { id: 'songbook', label: '曲库', icon: 'music', en: 'SONGBOOK' }, { id: 'gallery', label: '画册', icon: 'gallery', en: 'GALLERY' }, { id: 'settings', label: '偏好设置', icon: 'settings', en: 'PREFERENCES' }, { id: 'connection', label: '模型连接', icon: 'connection', en: 'CONNECTIONS' }]
 const { status, connected, busy, error, notice, connect, refresh } = useCompanion()
 const startupReady = computed(() => !bootStarting.value && !bootError.value && !!status.value?.startup_ready && ['ready', 'paused'].includes(status.value.phase))
 async function startBackend() {
@@ -97,7 +98,7 @@ watch(opening, value => {
 onMounted(async () => {
   await startBackend()
   welcomeLoaded = prepareWelcome()
-  timer = setInterval(() => { if (connected.value && !busy.value && !document.hidden) void refresh() }, 2000)
+  timer = setInterval(() => { if (connected.value && !busy.value) { if (!document.hidden) void refresh(); void call<string | null>('pop_navigation').then(target => { if (target) page.value = target }).catch(() => {}) } }, 2000)
 })
 onUnmounted(() => { clearInterval(timer); stopWelcome?.(); welcomeAudio?.pause() })
 </script>
@@ -110,7 +111,7 @@ onUnmounted(() => { clearInterval(timer); stopWelcome?.(); welcomeAudio?.pause()
       <div class="brand"><div class="brand-mark">𓆝</div><div><strong>大肥鱼</strong><span>一点陪伴，一点日常</span></div></div>
       <div class="nav-label">你的控制台</div>
       <nav aria-label="主导航"><button v-for="item in nav" :key="item.id" :class="{ active: page === item.id }" @click="page = item.id"><AppIcon :name="item.icon" /><span>{{ item.label }}</span><span v-if="page === item.id" class="nav-dot" /></button></nav>
-      <div class="sidebar-bottom"><button class="opening-replay" @click="opening = true">重播开场 <span>↗</span></button><div class="local-badge"><span class="dot" />本机运行</div><p>把复杂留在后台，<br />把日常留给大肥鱼。</p><span class="version">{{ status?.version || 'V5.3' }} · 天蓝桌面</span></div>
+      <div class="sidebar-bottom"><button class="opening-replay" @click="opening = true">重播开场 <span>↗</span></button><div class="local-badge"><span class="dot" />本机运行</div><p>把复杂留在后台，<br />把日常留给大肥鱼。</p><span class="version">{{ status?.version || 'V5.4' }} · 天蓝桌面</span></div>
     </aside>
     <main class="main-area">
       <header class="topbar"><span>{{ nav.find(n => n.id === page)?.en }}</span><div><span class="small muted">独立桌面控制台</span><span class="top-divider" /><span class="small"><span class="dot" :class="{ amber: !status?.connected }" />{{ status?.connected ? 'QQ 已连接' : status?.phase === 'stopped' ? '后台已停止' : connected ? '正在检查连接' : '连接控制台中' }}</span></div></header>
@@ -122,6 +123,7 @@ onUnmounted(() => { clearInterval(timer); stopWelcome?.(); welcomeAudio?.pause()
         <OverviewPage v-if="page === 'home' && entered" @navigate="page = $event" />
         <CreativePage v-else-if="page === 'creative'" />
         <CalendarPage v-else-if="page === 'calendar'" @navigate="page = $event" />
+        <PetPage v-else-if="page === 'pet'" />
         <SettingsPage v-else-if="page === 'settings'" />
         <SongbookPage v-else-if="page === 'songbook'" />
         <GalleryPage v-else-if="page === 'gallery'" />

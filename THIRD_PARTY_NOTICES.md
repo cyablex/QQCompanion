@@ -13,6 +13,7 @@ The full license is in LICENSE. Third-party files retain their own licenses.
 | NapCatQQ | https://github.com/NapNeko/NapCatQQ | Installed separately under its upstream license and terms; no account data bundled |
 | GPT-SoVITS | https://github.com/RVC-Boss/GPT-SoVITS | Installed separately; software and model/reference-audio licenses must be checked individually |
 | Seed-VC | https://github.com/Plachtaa/seed-vc | Installed separately; models and audio are not relicensed by this project |
+| Optional VPet Core host | https://github.com/LorisYounger/VPet | VPet-Simulator.Core 1.1.0.72 under Apache-2.0, installed separately from NuGet with its dependencies; demonstration animation assets follow the upstream's separate animation terms and are downloaded separately with source attribution |
 
 The public repository contains no voice reference recordings, music, character
 art, model weights, QQ binaries or private login data. Users provide or acquire
