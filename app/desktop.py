@@ -3,6 +3,7 @@
 import ctypes
 import os
 import sys
+import traceback
 
 from settings import ROOT
 
@@ -75,10 +76,15 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        # The pythonw launcher has no console: show a concise actionable failure.
+        # pythonw has no terminal; retain the actual startup failure locally.
+        log = ROOT / 'logs/desktop.log'
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open('a', encoding='utf-8') as output:
+            traceback.print_exc(file=output)
+        detail = f"缺少模块：{exc.name}" if isinstance(exc, ModuleNotFoundError) else type(exc).__name__
         ctypes.windll.user32.MessageBoxW(
             None,
-            f"控制台未能打开（{type(exc).__name__}）。\n请查看前端使用说明，确认本机运行环境可用。",
+            f"控制台未能打开（{detail}）。\n详细原因已保存在 logs/desktop.log。",
             TITLE,
             0x10,
         )

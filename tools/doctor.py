@@ -62,7 +62,9 @@ def check(root, deep=False):
         )
         result["desktop"] = probe(
             root.parent / "QQCompanionFrontendTools/python-env/Scripts/python.exe",
-            "import json,sys,webview;print(json.dumps({'base_local':sys.base_prefix=="
+            "import json,sys,webview;sys.path.insert(0,"
+            + repr(str(root / 'app'))
+            + ");from desktop_api import DesktopAPI;print(json.dumps({'api_import':True,'base_local':sys.base_prefix=="
             + repr(str(root / "runtime"))
             + "}))",
             root,

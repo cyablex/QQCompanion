@@ -10,6 +10,8 @@ import sqlite3
 import subprocess
 import threading
 import time
+import uuid
+import wave
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
@@ -23,8 +25,11 @@ from voice_status import read_voice_status, voice_required
 from song_library import SongLibrary
 from budget_breakdown import read_budget, period_totals
 from art_gallery import ArtGallery
+from creative_projects import CreativeProjects
+from song_previews import SongPreviews
+from song_voice import singing_voice
 
-VERSION = "V4.45"
+VERSION = "V5.2"
 TZ = timezone(timedelta(hours=8))
 FEATURES = (
     "proactive",
@@ -97,6 +102,109 @@ class DesktopAPI:
 
     def _attach_window(self, window):
         self._window = window
+
+    @result
+    def get_creative_projects(self):
+        with sqlite3.connect((ROOT / 'data/companion.sqlite3').as_uri() + '?mode=ro', uri=True, timeout=2) as db:
+            db.row_factory = sqlite3.Row
+            projects = CreativeProjects(db, read_settings(), ROOT)
+            active = projects.active()
+            return dict(projects=[projects.view(p) for p in projects.list()], assets=projects.available_assets(),
+                        active_id=active['id'] if active else '')
+
+    @result
+    def change_creative_project(self, action, data):
+        if not isinstance(data, dict):
+            raise ValueError('项目内容无效。')
+        with self._lock, sqlite3.connect(ROOT / 'data/companion.sqlite3', isolation_level=None, timeout=5) as db:
+            db.row_factory = sqlite3.Row
+            projects = CreativeProjects(db, read_settings(), ROOT)
+            ident = data.get('id', '')
+            if action == 'create':
+                project = projects.create(data.get('title', ''), data.get('kind', 'song'))
+            elif action == 'activate':
+                project = projects.activate(ident)
+            elif action == 'update':
+                project = projects.update(ident, data.get('stage'), data.get('next_step', ''))
+            elif action == 'note':
+                project = projects.note(ident, data.get('text'))
+            elif action == 'attach':
+                project = projects.attach(ident, data.get('kind'), data.get('asset_id'), data.get('scope', ''))
+            else:
+                raise ValueError('项目操作无效。')
+            return projects.view(project)
+
+    @result
+    def get_song_previews(self, song_id):
+        with sqlite3.connect((ROOT / 'data/companion.sqlite3').as_uri() + '?mode=ro', uri=True, timeout=2) as db:
+            db.row_factory = sqlite3.Row
+            return SongPreviews(db, ROOT).list(str(song_id))
+
+    @result
+    def create_song_preview(self, song_id, mode='reference_octave', shift=0):
+        with self._lock, sqlite3.connect(ROOT / 'data/companion.sqlite3', isolation_level=None, timeout=5) as db:
+            db.row_factory = sqlite3.Row
+            return dict(id=SongPreviews(db, ROOT).create(str(song_id), read_settings(), mode, shift))
+
+    @result
+    def song_version_preview(self, song_id, version):
+        with sqlite3.connect((ROOT / 'data/companion.sqlite3').as_uri() + '?mode=ro', uri=True, timeout=2) as db:
+            db.row_factory = sqlite3.Row
+            path, _ = SongPreviews(db, ROOT).ready_file(str(song_id), str(version))
+            return 'data:audio/mpeg;base64,' + base64.b64encode(path.read_bytes()).decode('ascii')
+
+    @result
+    def adopt_song_preview(self, song_id, version):
+        with self._lock, sqlite3.connect(ROOT / 'data/companion.sqlite3', isolation_level=None, timeout=5) as db:
+            db.row_factory = sqlite3.Row
+            return SongPreviews(db, ROOT).adopt(str(song_id), str(version))
+
+    @result
+    def get_singing_settings(self):
+        cfg = read_settings()
+        voice = singing_voice(cfg, ROOT)
+        return dict(label=Path(voice['reference']).name if cfg.get('singing_reference') else '跟随当前说话音色',
+                    mode=voice['pitch_mode'], shift=voice['shift'])
+
+    @result
+    def save_singing_settings(self, mode, shift, follow_voice=False):
+        with self._lock:
+            cfg = read_settings()
+            cfg.update(singing_pitch_mode=mode, singing_pitch_shift=shift)
+            if follow_voice:
+                cfg['singing_reference'] = ''
+            singing_voice(cfg, ROOT)
+            cfg['revision'] += 1
+            atomic_json(ROOT / 'config/user.json', cfg)
+        return dict(saved=True)
+
+    @result
+    def choose_singing_reference(self):
+        if self._window is None:
+            raise ValueError('请在桌面控制台选择参考音色。')
+        import webview
+
+        selected = self._window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False, file_types=('WAV 音色 (*.wav)',))
+        if not selected:
+            return dict(selected=False)
+        source = Path(selected[0] if isinstance(selected, (list, tuple)) else selected)
+        if source.suffix.lower() != '.wav':
+            raise ValueError('请选择 WAV 格式参考音色。')
+        try:
+            with wave.open(str(source)) as audio:
+                seconds = audio.getnframes() / audio.getframerate()
+        except (wave.Error, EOFError) as exc:
+            raise ValueError('参考音色需要可读取的 PCM WAV 音频。') from exc
+        if not 3 <= seconds <= 30:
+            raise ValueError('请选择3到30秒、清晰且只有一个人声的参考音色。')
+        destination = ROOT / 'data/songbook/references' / (uuid.uuid4().hex + '.wav')
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        with self._lock:
+            cfg = read_settings()
+            cfg.update(singing_reference=str(destination.resolve()), revision=cfg['revision'] + 1)
+            atomic_json(ROOT / 'config/user.json', cfg)
+        return dict(selected=True, label=source.name)
 
     @result
     def get_drawings(self, query="", scope="all", page=1):

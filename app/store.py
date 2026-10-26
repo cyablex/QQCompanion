@@ -169,6 +169,8 @@ class Store:
         self.db.execute("DELETE FROM state WHERE key LIKE ?", (f"sketches:%:{contact}",))
         self.db.execute("DELETE FROM state WHERE key LIKE ?", (f"web_lookup:%:{contact}",))
         self.db.execute("DELETE FROM state WHERE key LIKE ?", (f"web_readings:%:{contact}",))
+        self.db.execute("DELETE FROM state WHERE key LIKE ?", (f"creative:%:{contact}:%",))
+        self.db.execute("DELETE FROM state WHERE key LIKE ?", (f"creative_active:%:{contact}",))
         # Reset after deletion: SQLite may reuse message IDs when history is empty.
         from conversation_memory import ConversationMemory
 

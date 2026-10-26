@@ -28,7 +28,8 @@ def turns(songs, monkeypatch):
 
     async def generate(system, contexts, **options):
         e.calls.append((system, contexts, options))
-        value = e.responses.pop(0) if e.responses else e.plan
+        value = e.responses.pop(0) if e.responses else (
+            dict(action='reply', messages=[], tasks=[]) if '【本轮动作核对】' in system else e.plan)
         return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False), None
 
     e.engine.generate = e.plugin.generate = generate
@@ -44,8 +45,8 @@ def turns(songs, monkeypatch):
     return e
 
 
-def task(e, kind, **args):
-    e.plan["tasks"] = [dict(type=kind, **args)]
+def task(e, action_type, **args):
+    e.plan["tasks"] = [dict(type=action_type, **args)]
 
 
 def state(e):
@@ -101,18 +102,214 @@ async def test_promise_without_task_gets_bounded_format_repair_before_any_send(t
                    dict(action="reply", messages=["已唱完"], tasks=[dict(type="song.choose", song_id=song["id"])])]
     await e.engine.reply("12345")
     assert len(e.calls) == 2 and len(e.sent) == 1 and e.sent[0][2].get("song_file")
-    assert "未通过程序校验" in e.calls[1][0]
+    assert "【本轮动作核对】" in e.calls[1][0]
 
 
 @pytest.mark.asyncio
 async def test_invalid_plans_never_leak_raw_json_or_execute(turns):
     e = turns
     incoming(e, "帮我改资料")
-    e.responses = ["not json", '{"action":"reply","messages":["好了"],"tasks":[{"type":["bad"]}]}']
+    e.responses = ['{"action":', '{"action":"reply","messages":["好了"],"tasks":[{"type":["bad"]}]}',
+                   "这次修改还没有开始，你想改签名还是状态？"]
     await e.engine.reply("12345")
-    assert len(e.calls) == 2 and not e.native
+    assert len(e.calls) == 3 and not e.native
     assert "还没有开始" in e.sent[-1][1]
     assert not e.store.db.execute("SELECT 1 FROM turn_tasks").fetchone()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["在干嘛啊，咋最近不来找我", "啥意思"])
+async def test_casual_chat_accepts_plain_text_without_action_format_retry(turns, text):
+    e = turns
+    incoming(e, text)
+    e.responses = ["刚刚在放空呢，你来啦。"]
+    await e.engine.reply("12345")
+    assert len(e.calls) == 2 and e.sent[-1][1] == "刚刚在放空呢，你来啦。"
+    assert not e.native and not e.store.db.execute("SELECT 1 FROM turn_tasks").fetchone()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('candidate', ['好呀，给你安排。', '没问题，交给我啦。'])
+async def test_plain_agreement_becomes_real_song_delivery_before_reply(turns, candidate):
+    e = turns
+    song = ready(e)
+    incoming(e, '你挑一首唱给我听吧')
+    e.responses = [candidate, dict(action='reply', messages=[], tasks=[dict(type='song.choose', song_id=song['id'])])]
+    assert await e.engine.reply('12345')
+    assert len(e.calls) == 2 and len(e.sent) == 1
+    assert e.sent[-1][2]['song_file'] == song['file'] and state(e) == 'succeeded'
+    assert candidate not in e.sent[-1][1]
+    assert await e.engine.reply('12345')
+    assert len(e.calls) == 2 and len(e.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_plain_reply_with_missing_artist_registers_the_pending_request(turns):
+    e = turns
+    incoming(e, '唱一首雨爱吧')
+    e.responses = ['好哦。', dict(action='reply', messages=[], tasks=[dict(type='song.request', title='雨爱', artist='')])]
+    await e.engine.reply('12345')
+    assert state(e) == 'awaiting_input' and '哪位歌手' in e.sent[-1][1]
+    assert e.manager.pending_choices('12345')[0]['title'] == '雨爱'
+    assert not e.store.db.execute('SELECT 1 FROM song_requests').fetchone()
+
+
+@pytest.mark.asyncio
+async def test_spontaneous_plain_drawing_promise_creates_and_delivers_real_work(turns, monkeypatch):
+    e = turns
+    incoming(e, '今天有点累')
+    e.responses = ['给你画只趴着休息的小鲸鱼吧，等我一下。',
+                   dict(action='reply', messages=[], tasks=[dict(type='drawing.create', brief='趴着休息的小鲸鱼')])]
+    created = []
+
+    async def create(engine, cfg, brief, contact):
+        assert state(e) == 'running'
+        file = engine.sketchbook.folder(cfg, contact) / 'fish.png'
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_bytes(b'finished-image')
+        row = dict(id='fish', file=str(file), title='休息一下', caption='一起歇会儿。', created=time.time())
+        e.store.set(engine.sketchbook.key(cfg, contact), [row])
+        created.append(brief)
+        return row
+
+    monkeypatch.setattr(e.engine.sketchbook, 'create', create)
+    assert await e.engine.reply('12345')
+    assert created == ['趴着休息的小鲸鱼']
+    assert e.sent[-1][2].get('image_file') and state(e) == 'succeeded'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('text,candidate', [('先别唱，我只是说这首歌挺好听', '好呀，那先聊这首。'),
+                                          ('台词里那句“我给你画”是什么意思', '这句是在主动提出帮忙画画。')])
+async def test_action_review_can_leave_negation_and_quoted_dialogue_as_chat(turns, text, candidate):
+    e = turns
+    incoming(e, text)
+    e.responses = [candidate, dict(action='reply', messages=[], tasks=[])]
+    await e.engine.reply('12345')
+    assert len(e.calls) == 2 and e.sent[-1][1] == candidate
+    assert not e.native and not e.store.db.execute('SELECT 1 FROM turn_tasks').fetchone()
+    assert '候选文字不是用户授权' in e.calls[1][0]
+
+
+@pytest.mark.asyncio
+async def test_bad_review_is_repaired_before_executing_accepted_song(turns):
+    e = turns
+    song = ready(e)
+    incoming(e, '你挑一首唱吧')
+    e.responses = ['好呀。', '{"action":',
+                   dict(action='reply', messages=[], tasks=[dict(type='song.choose', song_id=song['id'])])]
+    assert await e.engine.reply('12345')
+    assert len(e.calls) == 3 and len(e.sent) == 1 and e.sent[-1][2]['song_file'] == song['file']
+
+
+@pytest.mark.asyncio
+async def test_failed_action_review_does_not_send_the_unfulfilled_agreement(turns):
+    e = turns
+    incoming(e, '唱一首歌给我听')
+    e.responses = ['好呀，交给我。', '{"action":', '不是JSON', '这次还没开始制作，等恢复后再试。']
+    await e.engine.reply('12345')
+    assert len(e.calls) == 4 and len(e.sent) == 1
+    assert e.sent[-1][1] == '这次还没开始制作，等恢复后再试。'
+    assert not e.native and not e.store.db.execute('SELECT 1 FROM turn_tasks').fetchone()
+
+
+@pytest.mark.asyncio
+async def test_new_user_input_during_action_review_cancels_old_execution(turns):
+    e = turns
+    song = ready(e)
+    incoming(e, '随便唱一首')
+    calls = []
+
+    async def generate(system, contexts, **options):
+        calls.append(options)
+        if len(calls) == 1:
+            return '好呀。', None
+        incoming(e, '等一下，别唱了', event='cancel-before-execution')
+        return json.dumps(dict(action='reply', messages=[], tasks=[dict(type='song.choose', song_id=song['id'])])), None
+
+    e.engine.generate = generate
+    await e.engine.reply('12345')
+    assert not e.sent and not e.store.db.execute('SELECT 1 FROM turn_tasks').fetchone()
+
+
+@pytest.mark.asyncio
+async def test_action_review_cannot_give_guest_profile_write_permission(turns):
+    e = turns
+    incoming(e, '把签名改成早上好', contact='11111')
+    e.responses = ['好呀。', dict(action='reply', messages=[], tasks=[dict(type='profile.signature', value='早上好')])]
+    await e.engine.reply('11111')
+    assert not e.native and state(e) == 'failed'
+
+
+@pytest.mark.asyncio
+async def test_finalized_chat_cannot_gain_an_unchecked_promise_during_polish(turns):
+    e = turns
+    e.cfg['chat_style_review'] = True
+    incoming(e, '今天心情不错')
+    e.responses = ['那就一起开心一下。', dict(action='reply', messages=[], tasks=[])]
+
+    async def polish(*args):
+        pytest.fail('Action-reviewed reply must not be rewritten after its final check')
+
+    e.engine.polish_reply = polish
+    await e.engine.reply('12345')
+    assert e.sent[-1][1] == '那就一起开心一下。'
+
+
+@pytest.mark.asyncio
+async def test_repeated_malformed_plans_recover_conversation_without_executing(turns):
+    e = turns
+    incoming(e, "啥意思")
+    e.responses = ['{"action":', '{"messages":[]}', "刚刚没接上，你是在问我最近做什么吧。"]
+    await e.engine.reply("12345")
+    assert len(e.calls) == 3 and len(e.sent) == 1
+    assert e.sent[-1][1] == "刚刚没接上，你是在问我最近做什么吧。"
+    assert not e.native and not e.store.db.execute("SELECT 1 FROM turn_tasks").fetchone()
+
+
+@pytest.mark.asyncio
+async def test_chat_recovery_cannot_smuggle_a_task_or_claim_execution(turns):
+    e = turns
+    incoming(e, "啥意思")
+    e.responses = ['{"action":', '{"messages":[]}',
+                   dict(action="reply", messages=["已经改好了"], tasks=[dict(type="profile.signature", value="不可执行")])]
+    await e.engine.reply("12345")
+    assert not e.native and "已经改好了" not in e.sent[-1][1]
+    assert not e.store.db.execute("SELECT 1 FROM turn_tasks").fetchone()
+
+
+def test_plain_code_block_retains_formatting_without_executing(turns):
+    text = '```python\nprint("hi")\n```'
+    decoded = TurnActions.decode(text, turns.cfg, 1)
+    assert decoded["messages"] == [text] and not decoded["turn_actions"]
+
+
+@pytest.mark.asyncio
+async def test_creative_project_can_be_created_and_resumed_from_chat(turns):
+    e = turns
+    incoming(e, '我们建个一起做歌的项目')
+    task(e, 'creative.create', title='接着做昨天的歌', kind='song')
+    await e.engine.reply('12345')
+    from creative_projects import CreativeProjects
+
+    projects = CreativeProjects(e.store.db, e.cfg, e.root)
+    project = projects.active()
+    assert project['title'] == '接着做昨天的歌'
+    incoming(e, '记一下：明天先听前30秒', event='next-note')
+    task(e, 'creative.update', project_id=project['id'], stage='adjust', next_step='明天先听前30秒')
+    await e.engine.reply('12345')
+    assert projects.active()['next_step'] == '明天先听前30秒'
+    assert '明天先听前30秒' in projects.context('12345')
+
+
+@pytest.mark.asyncio
+async def test_guest_cannot_write_owner_creative_project(turns):
+    e = turns
+    incoming(e, '建个项目', contact='11111')
+    task(e, 'creative.create', title='不该建立', kind='song')
+    await e.engine.reply('11111')
+    assert state(e) == 'rejected'
+    assert not e.store.db.execute("SELECT 1 FROM state WHERE key LIKE 'creative:%'").fetchone()
 
 
 @pytest.mark.parametrize("bad", [dict(type="song.choose", song_id="x", contact="11111"),
@@ -136,7 +333,7 @@ async def test_normal_chat_keeps_same_turn_voice_selection_without_creating_task
     e.engine.voice = SimpleNamespace(prepare=prepare)
     await e.engine.reply("12345")
     assert seen == [True] and e.sent[-1][1] == "你回来啦。"
-    assert len(e.calls) == 1 and not e.store.db.execute("SELECT 1 FROM turn_tasks").fetchone()
+    assert len(e.calls) == 2 and not e.store.db.execute("SELECT 1 FROM turn_tasks").fetchone()
 
 
 @pytest.mark.asyncio

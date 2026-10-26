@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { call, type Status } from '../services/api'
 
 const props = defineProps<{ startup: boolean; ready: boolean; starting: boolean; error: string; status: Status | null }>()
-const emit = defineEmits<{ done: [welcome: boolean]; retry: []; settings: []; login: [] }>()
+const emit = defineEmits<{ done: [welcome: boolean]; welcome: [finish: () => void]; retry: []; settings: []; login: [] }>()
 const frame = ref<HTMLIFrameElement | null>(null)
 const previousFocus = document.activeElement as HTMLElement | null
 const atGate = ref(false)
@@ -63,6 +63,8 @@ function message(event: MessageEvent) {
   if (type === 'dafeiyu-startup:done') {
     if (!props.startup || props.ready) emit('done', true)
     else failed.value = true
+  } else if (type === 'dafeiyu-startup:welcome') {
+    emit('welcome', () => frame.value?.contentWindow?.postMessage({ type: 'dafeiyu-startup:welcome-ended' }, '*'))
   } else if (type === 'dafeiyu-startup:waiting') { atGate.value = true; sendState() }
   else if (type === 'dafeiyu-startup:skip') skip()
   else if (type === 'dafeiyu-startup:failed') failed.value = true

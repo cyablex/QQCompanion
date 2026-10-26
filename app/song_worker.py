@@ -4,6 +4,7 @@ import argparse
 import gc
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -13,6 +14,7 @@ import urllib.request
 from settings import ROOT, atomic_json, read_settings
 from song_library import SongLibrary
 from song_source import resolve, download, SourceTemporary, SourceNeeded
+from song_voice import singing_voice
 
 SEED = ROOT.parent / "SeedVC"
 
@@ -25,12 +27,17 @@ def ffmpeg():
 
 
 class SongWorker:
-    def __init__(self, song_id):
+    def __init__(self, song_id, preview_id=""):
         self.song_id = song_id
         self.library_root = ROOT / "data/songbook"
         # Validate identifiers before constructing output or cleanup paths.
         self.output = SongLibrary(None).audio_path(song_id).resolve()
-        self.work = self.library_root / "work" / song_id
+        if preview_id and not re.fullmatch(r"[0-9a-f]{32}", preview_id):
+            raise ValueError("试听版本编号无效。")
+        self.work = (self.library_root / "previews" / song_id / preview_id if preview_id
+                     else self.library_root / "work" / song_id)
+        if preview_id:
+            self.output = self.work / "song.mp3"
         self.work.mkdir(parents=True, exist_ok=True)
         self.metadata = json.loads((self.work / "job.json").read_text(encoding="utf-8"))
         self.lease = self.library_root / "gpu-job.json"
@@ -151,7 +158,10 @@ class SongWorker:
             if self.cancelled():
                 raise InterruptedError("歌曲准备已暂停或取消。")
             self.progress("用大肥鱼的音色学唱")
+            voice_cfg = dict(read_settings(), **self.metadata.get("voice_options", {}))
+            voice = singing_voice(voice_cfg)
             self.command([sys.executable, "-X", "utf8", "-u", str(SEED / "companion_svc.py"), "--source", str(self.work / "vocals.wav"),
+                          "--target", voice["reference"], "--pitch-mode", voice["pitch_mode"], "--shift", str(voice["shift"]),
                           "--output", str(self.work / "converted")])
             converted = list((self.work / "converted").glob("*.wav"))
             if len(converted) != 1:
@@ -161,7 +171,7 @@ class SongWorker:
             if abs(duration - source["duration"]) > 5 or self.output.stat().st_size < 10000 or self.cancelled():
                 raise ValueError("歌曲未完整生成或任务已取消，没有收录。")
             atomic_json(self.work / "result.json", dict(state="ready", file=str(self.output), duration=duration,
-                        bytes=self.output.stat().st_size, source_url=source["url"], source_title=source["title"]))
+                        bytes=self.output.stat().st_size, source_url=source["url"], source_title=source["title"], voice=voice))
             self.progress("已准备好")
         except Exception as exc:
             self.output.unlink(missing_ok=True)
@@ -184,6 +194,7 @@ class SongWorker:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--song-id", required=True)
+    parser.add_argument("--preview-id", default="")
     args = parser.parse_args()
     os.chdir(SEED)
     for key, value in urllib.request.getproxies().items():
@@ -192,4 +203,4 @@ if __name__ == "__main__":
     os.environ.setdefault("HF_HOME", str(SEED / "checkpoints/hf_home"))
     os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
     os.environ.setdefault("NUMBA_CACHE_DIR", str(SEED / "cache/numba"))
-    SongWorker(args.song_id).run()
+    SongWorker(args.song_id, args.preview_id).run()

@@ -90,6 +90,35 @@ def personal(tmp_path):
     return root
 
 
+def test_creative_records_and_preview_voice_paths_survive_restore(personal, tmp_path):
+    reference = personal / 'data/songbook/references/custom.wav'
+    reference.parent.mkdir(parents=True)
+    reference.write_bytes(b'private-reference')
+    cfg = read_json(personal / 'config/user.json')
+    cfg['singing_reference'] = str(reference)
+    write_json(personal / 'config/user.json', cfg)
+    folder = personal / 'data/songbook/previews' / ('b' * 32) / ('c' * 32)
+    folder.mkdir(parents=True)
+    (folder / 'song.mp3').write_bytes(b'preview-audio')
+    write_json(folder / 'result.json', dict(state='ready', file=str(folder / 'song.mp3'), voice=dict(reference=str(reference))))
+    write_json(folder / 'job.json', dict(voice_options=dict(singing_reference=str(reference))))
+    with sqlite3.connect(personal / 'data/companion.sqlite3') as db:
+        db.execute('INSERT INTO state VALUES(?,?)', ('creative:67890:12345:project', json.dumps(dict(next_step='先听前30秒'))))
+    backup = tmp_path / 'creative.dfysave'
+    export_save(personal, backup, PASSWORD)
+    target = tmp_path / 'restored/QQCompanion'
+    restore_save(backup, target, PASSWORD)
+    assert Path(read_json(target / 'config/user.json')['singing_reference']).is_file()
+    restored = target / folder.relative_to(personal)
+    result = read_json(restored / 'result.json')
+    assert result['file'] == str(restored / 'song.mp3')
+    assert Path(result['voice']['reference']).is_file()
+    assert Path(read_json(restored / 'job.json')['voice_options']['singing_reference']).is_file()
+    with sqlite3.connect(target / 'data/companion.sqlite3') as db:
+        record = json.loads(db.execute("SELECT value FROM state WHERE key='creative:67890:12345:project'").fetchone()[0])
+        assert record['next_step'] == '先听前30秒'
+
+
 def test_save_round_trip_keeps_memory_art_and_songs_but_starts_offline(
     personal, tmp_path
 ):

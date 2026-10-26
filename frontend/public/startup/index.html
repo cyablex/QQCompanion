@@ -29,6 +29,19 @@
       }, true);
     }
     window.__DSH_STARTUP_SCRIPT_URL__ = './splash.js';
+    window.__DAFEIYU_WELCOME__ = function () {
+      parent.postMessage({type:'dafeiyu-startup:welcome'}, '*');
+      return new Promise(resolve => {
+        const finish = function (event) {
+          if (event.source !== parent || event.data?.type !== 'dafeiyu-startup:welcome-ended') return;
+          window.removeEventListener('message', finish);
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout(function () { window.removeEventListener('message', finish); resolve(); }, 15000);
+        window.addEventListener('message', finish);
+      });
+    };
     window.__DSH_STARTUP__ = {
       enabled:true, mode:'always', theme:'light', speed:1,
       requireInteraction:true, allowSkip:true,
@@ -65,7 +78,7 @@
     });
     document.addEventListener('DOMContentLoaded', function () {
       const meta = document.querySelector('.dsu-meta-1');
-      if (meta) meta.textContent = 'V4.33 · DESKTOP CONSOLE';
+      if (meta) meta.textContent = 'V5.0 · CREATE TOGETHER';
     });
   </script>
   <script defer src="./splash.js" onerror="parent.postMessage({type:'dafeiyu-startup:failed'}, '*')"></script>

@@ -8,6 +8,7 @@ import SettingsPage from './pages/SettingsPage.vue'
 import ConnectionsPage from './pages/ConnectionsPage.vue'
 import SongbookPage from './pages/SongbookPage.vue'
 import GalleryPage from './pages/GalleryPage.vue'
+import CreativePage from './pages/CreativePage.vue'
 import { useCompanion } from './composables/useCompanion'
 import { call } from './services/api'
 
@@ -20,7 +21,7 @@ watch(page, value => {
   document.querySelector('.main-area')?.scrollTo(0, 0)
   if (value === 'home' && !entered.value) opening.value = true
 }, { flush: 'post' })
-const nav = [{ id: 'home', label: '总览', icon: 'home', en: 'OVERVIEW' }, { id: 'songbook', label: '曲库', icon: 'music', en: 'SONGBOOK' }, { id: 'gallery', label: '画册', icon: 'gallery', en: 'GALLERY' }, { id: 'settings', label: '偏好设置', icon: 'settings', en: 'PREFERENCES' }, { id: 'connection', label: '模型连接', icon: 'connection', en: 'CONNECTIONS' }]
+const nav = [{ id: 'home', label: '总览', icon: 'home', en: 'OVERVIEW' }, { id: 'creative', label: '一起创作', icon: 'gallery', en: 'CREATE TOGETHER' }, { id: 'songbook', label: '曲库', icon: 'music', en: 'SONGBOOK' }, { id: 'gallery', label: '画册', icon: 'gallery', en: 'GALLERY' }, { id: 'settings', label: '偏好设置', icon: 'settings', en: 'PREFERENCES' }, { id: 'connection', label: '模型连接', icon: 'connection', en: 'CONNECTIONS' }]
 const { status, connected, busy, error, notice, connect, refresh } = useCompanion()
 const startupReady = computed(() => !bootStarting.value && !bootError.value && !!status.value?.startup_ready && ['ready', 'paused'].includes(status.value.phase))
 async function startBackend() {
@@ -42,43 +43,73 @@ async function openLogin() {
 let timer: ReturnType<typeof setInterval>
 let welcomeAudio: HTMLAudioElement | null = null
 let welcomeSource = ''
+let welcomeEnabled = false
+let welcomeLoaded: Promise<void> | null = null
+let stopWelcome: (() => void) | null = null
 const welcomePending = ref(false)
+async function prepareWelcome() {
+  try {
+    welcomeEnabled = (await call<{ enabled: boolean }>('get_startup_welcome')).enabled
+    if (welcomeEnabled && !welcomeSource) {
+      welcomeSource = await call<string>('voice_preview', 'welcome')
+      welcomeAudio = new Audio(welcomeSource)
+      welcomeAudio.preload = 'auto'
+      welcomeAudio.load()
+    }
+  } catch { welcomeEnabled = false }
+}
 async function playWelcome() {
   try {
     if (!welcomeSource) welcomeSource = await call<string>('voice_preview', 'welcome')
     welcomeAudio?.pause()
-    welcomeAudio = new Audio(welcomeSource)
-    await welcomeAudio.play()
+    if (!welcomeAudio) welcomeAudio = new Audio(welcomeSource)
+    welcomeAudio.currentTime = 0
+    const player = welcomeAudio
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => { player.pause(); cleanup(); resolve() }, 14000)
+      const cleanup = () => { clearTimeout(timer); player.onended = null; player.onerror = null; stopWelcome = null }
+      stopWelcome = () => { player.pause(); cleanup(); resolve() }
+      player.onended = () => { cleanup(); resolve() }
+      player.onerror = () => { cleanup(); reject(new Error('欢迎语暂未播放')) }
+      player.play().catch(e => { cleanup(); reject(e) })
+    })
     welcomePending.value = false
   } catch { welcomePending.value = true }
+}
+async function welcomeAtFrame(finish: () => void) {
+  try {
+    await welcomeLoaded
+    if (opening.value && welcomeEnabled) await playWelcome()
+  } finally { finish() }
 }
 async function finishOpening(welcome: boolean) {
   if (!entered.value && !startupReady.value) return
   if (!entered.value) page.value = 'home'
   entered.value = true
   opening.value = false
-  if (!welcome) return
-  try {
-    if ((await call<{ enabled: boolean }>('get_startup_welcome')).enabled) await playWelcome()
-  } catch { /* A missing native bridge must not block entry. */ }
+  // The welcome cue has already played with the final animation frame.
 }
-watch(opening, value => { if (value) { welcomeAudio?.pause(); welcomePending.value = false } })
+watch(opening, value => {
+  stopWelcome?.(); welcomeAudio?.pause()
+  if (value) { welcomePending.value = false; welcomeLoaded = prepareWelcome() }
+})
 onMounted(async () => {
   await startBackend()
+  welcomeLoaded = prepareWelcome()
   timer = setInterval(() => { if (connected.value && !busy.value && !document.hidden) void refresh() }, 2000)
 })
-onUnmounted(() => { clearInterval(timer); welcomeAudio?.pause() })
+onUnmounted(() => { clearInterval(timer); stopWelcome?.(); welcomeAudio?.pause() })
 </script>
 <template>
   <div class="app-shell">
     <WindowTitleBar />
-    <StartupScreen v-if="opening" :startup="!entered" :ready="startupReady" :starting="bootStarting" :error="bootError || error" :status="status" @done="finishOpening" @retry="retryStartup" @settings="startupSettings" @login="openLogin" />
+    <StartupScreen v-if="opening" :startup="!entered" :ready="startupReady" :starting="bootStarting" :error="bootError || error" :status="status" @done="finishOpening" @welcome="welcomeAtFrame" @retry="retryStartup" @settings="startupSettings" @login="openLogin" />
     <div :inert="opening">
     <aside class="sidebar">
       <div class="brand"><div class="brand-mark">𓆝</div><div><strong>大肥鱼</strong><span>一点陪伴，一点日常</span></div></div>
       <div class="nav-label">你的控制台</div>
       <nav aria-label="主导航"><button v-for="item in nav" :key="item.id" :class="{ active: page === item.id }" @click="page = item.id"><AppIcon :name="item.icon" /><span>{{ item.label }}</span><span v-if="page === item.id" class="nav-dot" /></button></nav>
-      <div class="sidebar-bottom"><button class="opening-replay" @click="opening = true">重播开场 <span>↗</span></button><div class="local-badge"><span class="dot" />本机运行</div><p>把复杂留在后台，<br />把日常留给大肥鱼。</p><span class="version">{{ status?.version || 'V4.45' }} · 天蓝桌面</span></div>
+      <div class="sidebar-bottom"><button class="opening-replay" @click="opening = true">重播开场 <span>↗</span></button><div class="local-badge"><span class="dot" />本机运行</div><p>把复杂留在后台，<br />把日常留给大肥鱼。</p><span class="version">{{ status?.version || 'V5.2' }} · 天蓝桌面</span></div>
     </aside>
     <main class="main-area">
       <header class="topbar"><span>{{ nav.find(n => n.id === page)?.en }}</span><div><span class="small muted">独立桌面控制台</span><span class="top-divider" /><span class="small"><span class="dot" :class="{ amber: !status?.connected }" />{{ status?.connected ? 'QQ 已连接' : status?.phase === 'stopped' ? '后台已停止' : connected ? '正在检查连接' : '连接控制台中' }}</span></div></header>
@@ -88,6 +119,7 @@ onUnmounted(() => { clearInterval(timer); welcomeAudio?.pause() })
         <div v-if="entered && ['unavailable', 'singing'].includes(status?.voice?.state || '')" class="alert warning" role="status">{{ status?.voice.message }}</div>
         <div v-if="error" class="alert error" role="alert"><span>{{ error }}</span><button class="icon-button" aria-label="关闭提示" @click="error = ''"><AppIcon name="close" :size="16" /></button></div>
         <OverviewPage v-if="page === 'home' && entered" @navigate="page = $event" />
+        <CreativePage v-else-if="page === 'creative'" />
         <SettingsPage v-else-if="page === 'settings'" />
         <SongbookPage v-else-if="page === 'songbook'" />
         <GalleryPage v-else-if="page === 'gallery'" />

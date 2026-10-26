@@ -60,6 +60,25 @@ def test_event_dedup_and_contact_isolation(setup):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('recover', [True, False])
+async def test_background_invalid_json_retries_once_then_recovers_or_skips(setup, recover):
+    _, _, engine, sent, _ = setup
+    modes = []
+
+    async def generate(system, contexts, response_mode=None):
+        modes.append(response_mode)
+        if recover and len(modes) == 2:
+            return '{"action":"reply","messages":["有个小想法想分享"],"memory":[]}', None
+        return '这不是JSON', None
+
+    engine.generate = generate
+    result = await engine.decision('12345', 'proactive', '有值得分享的事才联系')
+    assert modes == [None, None]
+    assert result['action'] == ('reply' if recover else 'skip')
+    assert not sent
+
+
+@pytest.mark.asyncio
 async def test_self_signature_cannot_be_treated_as_contact_profile(setup):
     store, cfg, engine, sent, prompts = setup
     store.set("self_profile:67890", dict(signature="喜欢和朋友有一句没一句地聊到心里去。", status="在线"))
@@ -376,7 +395,7 @@ async def test_sdk_empty_output_error_is_retried(setup):
 
 
 @pytest.mark.asyncio
-async def test_background_blank_falls_back_to_text_and_keeps_public_context_isolated(
+async def test_background_blank_retries_json_and_keeps_public_context_isolated(
     setup,
 ):
     store, cfg, engine, sent, prompts = setup
@@ -397,7 +416,7 @@ async def test_background_blank_falls_back_to_text_and_keeps_public_context_isol
         "12345", "qzone_comment", "a public post", public=True
     )
     assert result["messages"] == ["公开评论"]
-    assert modes == [None, "text"]
+    assert modes == [None, None]
 
 
 @pytest.mark.asyncio

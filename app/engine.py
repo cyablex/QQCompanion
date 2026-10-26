@@ -304,6 +304,10 @@ class Engine:
                 return None
             empty_retries = 0
             plan_retries = 0
+            structured_retries = 0
+            chat_only = False
+            reviewing_actions = False
+            review_candidate = None
             route = dict(official=False)
             for attempt in range(6):
                 fresh = self.config_reader()
@@ -326,7 +330,7 @@ class Engine:
                     try:
                         response, usage, rid = await self._generate_reserved(
                             cfg, kind, call_system, call_contexts,
-                            "text" if plain_reply or attempt else "json", rid,
+                            "json" if reviewing_actions or not plain_reply else "text", rid,
                             input_size * 2 / 1_000_000 + MODEL_MAX_OUTPUT_TOKENS * 8 / 1_000_000,
                             route, lambda: self.store.last_incoming(contact) == read_through and (public or self.memory_epoch(contact) == memory_generation),
                         )
@@ -404,25 +408,73 @@ class Engine:
                         response = "这次没有拿到足够的网页依据，我暂时不能确认。"
                     if plain_reply:
                         turn_plan = None
-                        if self.turn_actions:
+                        if self.turn_actions and not chat_only:
                             try:
-                                turn_plan = self.turn_actions.decode(response, cfg, read_through)
+                                turn_plan = (
+                                    self.turn_actions.decode_completion(response, review_candidate, cfg, read_through)
+                                    if reviewing_actions else self.turn_actions.decode(
+                                        response, cfg, read_through, allow_unplanned=True)
+                                )
                             except InvalidTurn as exc:
                                 if plan_retries == 0:
                                     plan_retries += 1
                                     system += "\n上一轮计划未通过程序校验：" + str(exc) + "请用完整JSON重新提交正文和tasks，不能把未登记的动作说成已执行。"
                                     continue
-                                return finish(dict(action="reply", messages=["这次没有形成完整的执行计划，还没有开始新的操作。请再明确一下要我做的事。"],
-                                                   turn_actions=[], memory=[], revision=cfg["revision"], read_through=read_through))
+                                log.warning("turn_format_recovery reason=%s", str(exc))
+                                chat_only = True
+                                reviewing_actions = False
+                                system = ChatPromptBuilder(
+                                    self.store, self.memory, self.activities, self.sketchbook, self.web,
+                                    singing=self.singing, stickers=self.stickers,
+                                ).build(
+                                    dict(cfg, autonomous_drawing=False, autonomous_profile=False),
+                                    contact, kind, instruction, history, memories,
+                                    public=public, now=datetime.now(TZ),
+                                ).system
+                                system += (
+                                    "\n本轮只恢复聊天，不执行任何操作。直接接住对方最后的话，输出自然正文；"
+                                    "不要JSON、任务计划或内部故障说明，不重复历史报错。"
+                                    "如果对方确实请求操作，如实说明这次尚未开始，可以再试；普通闲聊正常回应。"
+                                    "不承诺或声称操作已执行，也不输出绘图、心情或其他执行标记。"
+                                )
+                                continue
                             if turn_plan["turn_actions"] or turn_plan["action"] == "skip":
                                 return finish(turn_plan)
+                            if not reviewing_actions:
+                                review_candidate = turn_plan
+                                reviewing_actions = True
+                                system += self.turn_actions.completion_prompt(turn_plan)
+                                continue
                             response = "\n\n".join(turn_plan["messages"])
-                        return finish(parse_chat_reply(
+                        if chat_only:
+                            try:
+                                checked = self.turn_actions.decode(response, cfg, read_through)
+                                if checked["turn_actions"] or checked["action"] != "reply":
+                                    raise InvalidTurn("聊天恢复不能执行动作。")
+                                response = "\n\n".join(checked["messages"])
+                            except InvalidTurn:
+                                response = "刚才没接好这句话，可以再跟我说一下吗？"
+                        result = parse_chat_reply(
                             response, cfg, read_through, contact=contact,
                             stickers=self.stickers, turn_plan=turn_plan,
                             recent_sticker=lambda: self.store.get("last_sticker:" + contact, {}),
-                        ))
-                    return finish(self.parse_decision(response, cfg, read_through))
+                        )
+                        if chat_only:
+                            result.update(drawing_brief=None, mood=None, turn_actions=[])
+                        if self.turn_actions:
+                            result['turn_finalized'] = True
+                        return finish(result)
+                    try:
+                        return finish(self.parse_decision(response, cfg, read_through))
+                    except (ValueError, TypeError) as exc:
+                        if structured_retries == 0:
+                            structured_retries += 1
+                            system += ('\n上一轮输出格式无效。请只输出有效JSON，包含action、messages、memory；'
+                                       '没有合适内容就输出{"action":"skip","messages":[],"memory":[]}。')
+                            continue
+                        log.warning("background_format_recovery kind=%s reason=%s", kind, type(exc).__name__)
+                        return finish(dict(action="skip", messages=[], memory=[],
+                                           revision=cfg["revision"], read_through=read_through))
                 except BaseException as exc:
                     self.store.settle(rid, state="failed_or_unknown")
                     if empty_retries == 0 and attempt < 2 and (
@@ -669,7 +721,7 @@ class Engine:
                 handled = await self.turn_actions.execute(contact, self, result)
                 if handled is not None:
                     return handled
-            if cfg.get("chat_style_review", False):
+            if cfg.get("chat_style_review", False) and result and not result.get('turn_finalized'):
                 result = await self.polish_reply(contact, result)
             if result and result.get("drawing_brief") and cfg.get("autonomous_drawing") and contact.isdigit():
                 try:

@@ -27,6 +27,7 @@ DATA_FOLDERS = (
     "drawings",
     "knowledge_base",
     "songbook/audio",
+    "songbook/references",
     "t2i_templates",
     "webchat",
 )
@@ -119,6 +120,11 @@ def export_save(root, output, password):
             items.extend(
                 (p, "main/" + p.relative_to(root).as_posix()) for p in _files(folder)
             )
+    for job in (root / 'data/songbook/previews').glob('*/*/job.json'):
+        for name in ('job.json', 'result.json', 'song.mp3', 'converted/pitch.json'):
+            path = job.parent / name
+            if path.is_file():
+                items.append((path, 'main/' + path.relative_to(root).as_posix()))
     if (root / "assets").exists():
         items.extend(
             (p, "main/" + p.relative_to(root).as_posix())
@@ -169,6 +175,12 @@ def export_save(root, output, password):
                     scratch / "snapshot.sqlite3", "main/data/companion.sqlite3"
                 )
                 for path, name in items:
+                    if name.startswith('main/data/songbook/previews/') and name.endswith('/job.json'):
+                        job = read_json(path)
+                        job.pop('pid', None)
+                        job.pop('worker_pid', None)
+                        archive.writestr(name, json.dumps(job, ensure_ascii=False))
+                        continue
                     if name == "main/config/user.json":
                         archive.writestr(
                             name,
@@ -376,6 +388,8 @@ def restore_save(backup, target, password):
             if (unpacked / "voice" / name).exists() and (voice_target / name).exists():
                 raise ValueError("目标已有参考音色配置，请选择另一套空目录。")
         cfg = clean_config(read_json(unpacked / "main/config/user.json"))
+        if cfg.get('singing_reference'):
+            cfg['singing_reference'] = relocate_path(cfg['singing_reference'], manifest['source_root'], target)
         cfg.update(live=False, paused=True, revision=int(cfg.get("revision", 0)) + 1)
         write_json(unpacked / "main/config/user.json", cfg)
         write_json(
@@ -405,6 +419,18 @@ def restore_save(backup, target, password):
                 )
                 write_json(artifact, record)
         presets = unpacked / "voice/reference/yui/presets.json"
+        for artifact in (unpacked / 'main/data/songbook/previews').glob('*/*/*.json'):
+            record = read_json(artifact)
+            if not isinstance(record, dict):
+                continue
+            if isinstance(record.get('file'), str):
+                record['file'] = relocate_path(record['file'], manifest['source_root'], target)
+            for field in ('voice', 'voice_options'):
+                if isinstance(record.get(field), dict):
+                    for key in ('reference', 'singing_reference'):
+                        if isinstance(record[field].get(key), str):
+                            record[field][key] = relocate_path(record[field][key], manifest['source_root'], target)
+            write_json(artifact, record)
         if presets.is_file():
             values = read_json(presets)
             for profile in values.get("profiles", []):

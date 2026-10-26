@@ -420,7 +420,8 @@ def test_installed_singing_models_use_cache_before_network(tmp_path, monkeypatch
         assert os.environ["HF_HUB_OFFLINE"] == expected
         converted.append(args)
 
-    monkeypatch.setitem(sys.modules, "inference", SimpleNamespace(main=convert))
+    monkeypatch.syspath_prepend(str(path.parent))
+    monkeypatch.setitem(sys.modules, "inference", SimpleNamespace(main=convert, load_models=lambda args: ()))
     module.main()
     assert len(converted) == 1
     assert converted[0].f0_condition and converted[0].diffusion_steps == 35

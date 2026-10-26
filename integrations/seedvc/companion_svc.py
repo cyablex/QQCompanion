@@ -17,6 +17,7 @@ def main():
     parser.add_argument("--output", type=Path, default=ROOT / "outputs")
     parser.add_argument("--steps", type=int, choices=range(10, 61), default=35)
     parser.add_argument("--shift", type=int, choices=range(-12, 13), default=0)
+    parser.add_argument("--pitch-mode", choices=("reference_octave", "preserve"), default="reference_octave")
     args = parser.parse_args()
     if not args.source.is_file() or not args.target.is_file():
         parser.error("需要实际存在的歌声干声与参考音色文件")
@@ -34,9 +35,36 @@ def main():
     # Maintainers can explicitly set HF_HUB_OFFLINE=0 when updating models.
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     os.environ.setdefault("NUMBA_CACHE_DIR", str(ROOT / "cache/numba"))
-    from inference import main as convert
+    import inference
+    if args.pitch_mode == "reference_octave":
+        import numpy as np
+        from pitch_policy import reference_register
 
-    convert(SimpleNamespace(source=str(args.source.resolve()), target=str(args.target.resolve()),
+        load_models = inference.load_models
+
+        def load_with_register(options):
+            models = list(load_models(options))
+            extract = models[2]
+            reference = None
+
+            def pitch(audio, **kwargs):
+                nonlocal reference
+                result = extract(audio, **kwargs)
+                # Seed-VC extracts target/reference first, then the source vocals.
+                if reference is None:
+                    reference = result
+                    return result
+                adjusted, report = reference_register(result, reference)
+                args.output.mkdir(parents=True, exist_ok=True)
+                (args.output / "pitch.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                return np.asarray(adjusted, dtype=result.dtype)
+
+            models[2] = pitch
+            return tuple(models)
+
+        inference.load_models = load_with_register
+
+    inference.main(SimpleNamespace(source=str(args.source.resolve()), target=str(args.target.resolve()),
                             output=str(args.output.resolve()), diffusion_steps=args.steps,
                             length_adjust=1.0, inference_cfg_rate=0.7, f0_condition=True,
                             auto_f0_adjust=False, semi_tone_shift=args.shift,

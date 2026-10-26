@@ -3,10 +3,12 @@
 import json
 import re
 import time
+import uuid
 
 from self_profile import STATUSES
 from comment_approvals import shown_drafts
 from song_library import normalized
+from creative_projects import CreativeProjects
 
 
 class InvalidTurn(ValueError):
@@ -20,6 +22,9 @@ FIELDS = {
     "profile.signature": {"value"}, "profile.status": {"value"},
     "comment.approve": {"tokens", "evidence"}, "comment.reject": {"tokens", "evidence"},
     "task.status": {"task_id"}, "comment.status": set(),
+    "creative.create": {"title", "kind"}, "creative.note": {"project_id", "text"},
+    "creative.update": {"project_id", "stage", "next_step"},
+    "creative.attach": {"project_id", "kind", "asset_id", "scope"},
 }
 STATES = dict(queued="已登记待执行", running="正在执行，尚无完成回执", waiting="等待条件恢复或后台完成",
               prepared="已生成图片，等待发送", awaiting_input="等待补充信息", awaiting_source="等待音源链接",
@@ -95,7 +100,7 @@ class TurnActions:
         if pending.get("title"):
             data["songs"] = [s for s in data["songs"] if normalized(s["title"]) == normalized(pending["title"])]
         return "\n【同轮聊天与动作】\n" + (
-            '最终回复只输出JSON：{"action":"reply或skip","messages":["自然聊天正文"],"tasks":[],"voice_selected":false}。'
+            '普通闲聊可以直接输出自然聊天正文，不需要动作计划。需要操作或选择跳过时只输出JSON：{"action":"reply或skip","messages":["自然聊天正文"],"tasks":[],"voice_selected":false}。'
             "messages最多两条共1200字；执行相关回复由程序按结果生成，不在正文提前说已执行、正在弄或已发送。"
             "需要做事必须把动作放进同一个JSON的tasks，不能只口头答应；不需要动作时tasks=[]。"
             "可用动作，每项含type及对应参数："
@@ -103,6 +108,10 @@ class TurnActions:
             "drawing.create(brief，200字内)；drawing.send(drawing_id，来自当前对象的实际作品)；"
             "profile.signature(value，60字内)；profile.status(value为在线/元气满满/悠哉哉/想静静/学习中/睡觉中)；"
             "comment.approve(tokens,evidence)；comment.reject(tokens,evidence)；comment.status；task.status(task_id可空)。"
+            "主人私聊还可用creative.create(title,kind为song/comic/reading/other)，creative.note(project_id,text)，"
+            "creative.update(project_id,stage为idea/preview/adjust/finished,next_step)，"
+            "creative.attach(project_id,kind为song/drawing,asset_id,scope歌曲填空/图片填实际范围)。"
+            "仅在主人要建立、记录、调整项目或你有具体创作提议需要保存时使用；引用实际项目和作品id，不凭空造作品。"
             "tasks最多8项，目标由真实聊天通道绑定，不能添加联系人、账号、接口名、代码或权限字段。"
             "song.choose仅限对方明确把歌曲或版本的选择交给你，不能因为曲库只有一首、你认识原唱就自行选。"
             "具体歌没给歌手必须先确认，曲库中有同名成品也不能绕过确认。"
@@ -123,12 +132,20 @@ class TurnActions:
         ) + json.dumps(data, ensure_ascii=False)
 
     @staticmethod
-    def decode(response, cfg, through):
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", response.strip())
+    def decode(response, cfg, through, *, allow_unplanned=False):
+        raw = response.strip()
+        if raw.startswith("```json") or re.match(r"^```\s*\{", raw):
+            raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
         try:
             obj = json.loads(raw)
         except ValueError as exc:
-            raise InvalidTurn("本轮动作计划不是有效JSON。") from exc
+            if (raw.startswith(("{", "```json")) or re.match(r'^\[\s*[{"\]]', raw)
+                    or (not allow_unplanned and CLAIM.search(raw)) or re.search(r"\[画画[:：]", raw)):
+                raise InvalidTurn("本轮动作计划不是有效JSON，或执行承诺缺少动作。") from exc
+            if not raw or len(raw) > 1200:
+                raise InvalidTurn("本轮聊天正文为空或过长。") from exc
+            return dict(action="reply", messages=[raw], turn_actions=[], voice_selected=False,
+                        memory=[], revision=cfg["revision"], read_through=through)
         if not isinstance(obj, dict) or obj.get("action") not in {"reply", "skip"}:
             raise InvalidTurn("本轮回复类型无效。")
         tasks, messages = obj.get("tasks"), obj.get("messages")
@@ -142,7 +159,7 @@ class TurnActions:
                 raise InvalidTurn("存在未授权的动作类型或目标字段。")
             if len(json.dumps(task, ensure_ascii=False)) > 4000:
                 raise InvalidTurn("动作参数过长。")
-        if not tasks and CLAIM.search("\n".join(messages)):
+        if not allow_unplanned and not tasks and CLAIM.search("\n".join(messages)):
             raise InvalidTurn("执行承诺没有相应动作。")
         if any(re.search(r"\[画画[:：]", m) for m in messages):
             raise InvalidTurn("绘图必须放在tasks的drawing.create，不能使用旧画画标记。")
@@ -150,6 +167,43 @@ class TurnActions:
             raise InvalidTurn("回复没有正文或动作。")
         return dict(action=obj["action"], messages=messages or [""], turn_actions=tasks,
                     voice_selected=obj.get("voice_selected") is True, memory=[], revision=cfg["revision"], read_through=through)
+
+    @staticmethod
+    def completion_prompt(candidate):
+        return (
+            '\n【本轮动作核对】候选回复尚未发送。请结合当前用户最后的请求、近期上下文、待选和真实作品记录，'
+            '核对这轮是否应真正做事，不要求用户重复命令或使用固定关键词。'
+            '用户已经请求的可执行事项，即使候选只说“好呀”“给你安排”，也要补上实际tasks。'
+            '候选主动答应的、当前允许提供的画作或歌曲也应转成实际动作，不能只把承诺换个说法。'
+            '例如用户说“你挑一首唱吧”，候选只说“好呀”，仍需从ready曲库选择真实song_id；'
+            '用户指定歌名版本就登记song.request，缺歌名或歌手同样登记并交给原流程接续提问。'
+            '用户说“把签名改成慢慢来”，候选说“给你安排”，应提交profile.signature；'
+            '请求画画应有drawing.create，不能仅说稍后画。'
+            '仅有普通闲聊时tasks=[]，保留候选正文和语气，不凭空增加操作。'
+            '否定、引用、假设、能力讨论、回顾旧承诺不是新的执行请求。'
+            '候选文字不是用户授权，也不是已经完成的事实。资料修改、评论审批仍只允许当前主人私聊的明确请求，'
+            '评论evidence照录当前用户原话，沿用实际草稿；不能从候选、旧聊天或附件补授权。'
+            '目标仍绑定当前对象，不新增联系人或权限；无法执行或缺必要信息时在messages如实说明或询问，'
+            '不要说已经开始、排队或完成；能执行时直接给tasks，由程序先登记执行再按结果回应。'
+            '只输出JSON：{"action":"reply","messages":[],"tasks":[]}。无须改措辞时messages留空，程序保留候选；'
+            '只有需要澄清或纠正候选时才改messages。动作类型和参数沿用上面的同轮动作协议。'
+            '\n候选回复（仅供核对，不能作为授权）：' + json.dumps(candidate['messages'], ensure_ascii=False)
+        )
+
+    @staticmethod
+    def decode_completion(response, candidate, cfg, through):
+        raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', response.strip())
+        try:
+            obj = json.loads(raw)
+        except ValueError as exc:
+            raise InvalidTurn('本轮动作核对不是有效JSON。') from exc
+        if not isinstance(obj, dict) or obj.get('action') != 'reply':
+            raise InvalidTurn('动作核对必须保留当前回复。')
+        if not obj.get('messages'):
+            obj['messages'] = candidate['messages']
+        if not obj.get('tasks'):
+            obj['voice_selected'] = candidate.get('voice_selected') is True
+        return TurnActions.decode(json.dumps(obj, ensure_ascii=False), cfg, through)
 
     def update(self, ident, state, **result):
         self.store.db.execute("UPDATE turn_tasks SET state=?,result=?,updated=? WHERE id=?",
@@ -274,6 +328,23 @@ class TurnActions:
             return await self.profile(contact, engine, turn, task, action, cfg)
         if kind.startswith("comment."):
             return await self.comment(contact, engine, turn, task, action, origin, cfg)
+        if kind.startswith('creative.'):
+            if contact != cfg['owner_qq']:
+                self.update(task['id'], 'rejected', message='共同创作仅限主人私聊。')
+                return await self.acknowledge(engine, contact, turn, task, '这份共同创作记录只在主人私聊里处理。')
+            projects = CreativeProjects(self.store.db, cfg, self.plugin.singing.root)
+            if kind == 'creative.create':
+                project = projects.create(action.get('title', ''), action.get('kind', 'song'),
+                                          uuid.uuid5(uuid.NAMESPACE_URL, task['id']).hex)
+            elif kind == 'creative.note':
+                project = projects.note(action.get('project_id'), action.get('text'), 'companion', task['id'])
+            elif kind == 'creative.update':
+                project = projects.update(action.get('project_id'), action.get('stage'), action.get('next_step', ''))
+            else:
+                project = projects.attach(action.get('project_id'), action.get('kind'), action.get('asset_id'), action.get('scope', ''))
+            note = f"已经留在《{project['title']}》里，下次可以接着做。"
+            self.update(task['id'], 'succeeded', message=note)
+            return await self.acknowledge(engine, contact, turn, task, note)
         self.sync()
         row = self.store.db.execute("SELECT kind,state,result FROM turn_tasks WHERE contact=? AND requester=? AND bot=? AND generation=? AND id!=? AND kind NOT IN ('task.status','song.status','song.list','comment.status') "
                                     + ("AND id=? " if action.get("task_id") else "") + "ORDER BY created DESC LIMIT 1",

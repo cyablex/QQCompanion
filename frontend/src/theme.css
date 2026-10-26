@@ -31,6 +31,15 @@ nav button.active { background: #dceaff; color: #3759c8; font-weight: 650; }
 .nav-dot { margin-left: auto; width: 5px; height: 5px; border-radius: 50%; background: #546582; }
 .sidebar-bottom { margin-top: auto; padding: 25px 15px 0; }
 .sidebar-bottom p { color: #8a8f98; font-size: 12px; margin: 16px 0 24px; line-height: 2; }
+@media (max-height: 820px) {
+  .sidebar { padding: 22px 16px 16px; overflow-y: auto; }
+  .brand, nav { flex-shrink: 0; }
+  .nav-label { margin: 24px 0 12px; }
+  nav { gap: 4px; }
+  nav button { padding: 10px 14px; }
+  .sidebar-bottom { padding-top: 18px; }
+  .sidebar-bottom p { margin: 10px 0 12px; }
+}
 .local-badge { display: inline-flex; align-items: center; font-size: 11px; color: #5f6978; }
 .version { font-size: 10px; color: #9297a0; letter-spacing: .6px; }
 .dot { display: inline-block; flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; background: #4f8be9; margin-right: 7px; vertical-align: middle; }
