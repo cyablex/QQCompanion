@@ -78,6 +78,87 @@ async def test_self_chosen_song_uses_single_chat_plan_and_real_voice_receipt(tur
 
 
 @pytest.mark.asyncio
+async def test_song_and_independent_question_both_reply_and_never_repeat(turns):
+    e = turns
+    ready(e)
+    incoming(e, '给我唱司凤版雨爱。还有，你的动态风格是模仿主人的吗？')
+    task(e, 'song.request', title='雨爱', artist='司凤')
+    e.plan['chat_messages'] = ['风格有时会接近，但我也会挑自己感兴趣的东西聊。']
+    assert await e.engine.reply('12345')
+    assert len(e.sent) == 2 and e.sent[0][2].get('song_file')
+    assert e.sent[1][1] == e.plan['chat_messages'][0] and not e.sent[1][2]
+    assert '模型正文' not in str(e.sent)
+    assert await e.engine.reply('12345')
+    assert len(e.sent) == 2
+
+
+@pytest.mark.asyncio
+async def test_old_pending_song_does_not_force_a_new_plain_greeting_to_song(turns):
+    e = turns
+    e.store.set('song_pending:67890:12345:12345',dict(title='雨爱',stage='artist',expires=time.time()+3600))
+    incoming(e,'大胖鱼，你咋不理我')
+    e.plan.update(messages=['在呢，刚才没接住你，继续说呀。'],tasks=[])
+    assert await e.engine.reply('12345')
+    assert len(e.sent) == 1 and e.sent[0][1] == e.plan['messages'][0] and not e.sent[0][2]
+    assert '旧点歌状态只是背景' in e.calls[0][0]
+
+
+@pytest.mark.asyncio
+async def test_failed_parallel_chat_retries_without_singing_again_and_forget_cleans_it(turns):
+    e = turns
+    ready(e)
+    incoming(e,'给我唱司凤版雨爱，也说说你今天想聊什么')
+    task(e,'song.request',title='雨爱',artist='司凤')
+    e.plan['chat_messages'] = ['今天还想聊聊小鲸鱼的画。']
+    original = e.engine.send
+    failed = False
+
+    async def send(contact, text, **options):
+        nonlocal failed
+        if not options and not failed:
+            failed = True
+            raise DeliveryUnavailable('definitely not sent')
+        return await original(contact,text,**options)
+
+    e.engine.send = send
+    with pytest.raises(DeliveryUnavailable):
+        await e.engine.reply('12345')
+    assert len(e.sent) == 1 and e.sent[0][2].get('song_file')
+    assert await e.engine.reply('12345')
+    assert len(e.sent) == 2 and e.sent[-1][1] == e.plan['chat_messages'][0]
+    assert len(e.calls) == 1
+    assert e.store.db.execute("SELECT 1 FROM state WHERE key LIKE 'turn_chat:%'").fetchone()
+    e.store.forget('12345')
+    assert not e.store.db.execute("SELECT 1 FROM state WHERE key LIKE 'turn_chat:%'").fetchone()
+
+
+@pytest.mark.asyncio
+async def test_repeat_uses_confirmed_song_and_longer_unanswered_batch_keeps_question(turns):
+    e = turns
+    ready(e)
+    incoming(e,'给我唱司凤版雨爱',event='first')
+    task(e,'song.request',title='雨爱',artist='司凤')
+    assert await e.engine.reply('12345')
+    now = time.time()
+    e.store.incoming('repeat','12345','我还想听一遍',now)
+    e.store.incoming('style','12345','你的动态是模仿主人的吗',now+35)
+    e.store.incoming('call','12345','大胖鱼',now+160)
+    assert '我还想听一遍' in e.manager.origin('12345')['text']
+    e.plan['chat_messages'] = ['动态会挑我自己感兴趣的内容。']
+    task(e,'song.repeat')
+    assert await e.engine.reply('12345')
+    assert len([m for m in e.sent if m[2].get('song_file')]) == 2
+    assert e.sent[-1][1] == e.plan['chat_messages'][0]
+    assert not any('哪位歌手' in m[1] or '想听哪首' in m[1] for m in e.sent)
+
+
+@pytest.mark.parametrize('chat', [['马上给你唱'], ['我已经发好了'], '正文', ['x'*1201]])
+def test_independent_chat_cannot_smuggle_execution_claims(chat):
+    with pytest.raises(InvalidTurn):
+        TurnActions.decode(json.dumps(dict(action='reply',messages=[],tasks=[dict(type='song.list')],chat_messages=chat)),{},0)
+
+
+@pytest.mark.asyncio
 async def test_missing_artist_not_guessed_and_next_turn_continues_pending_song(turns):
     e = turns
     ready(e)

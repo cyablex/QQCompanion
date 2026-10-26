@@ -17,7 +17,7 @@ class InvalidTurn(ValueError):
 
 FIELDS = {
     "song.request": {"title", "artist", "source_url"}, "song.choose": {"song_id"},
-    "song.status": set(), "song.cancel": set(), "song.list": set(),
+    "song.status": set(), "song.cancel": set(), "song.list": set(), "song.repeat": set(),
     "drawing.create": {"brief"}, "drawing.send": {"drawing_id"},
     "profile.signature": {"value"}, "profile.status": {"value"},
     "comment.approve": {"tokens", "evidence"}, "comment.reject": {"tokens", "evidence"},
@@ -92,6 +92,7 @@ class TurnActions:
             pending = {}
         request = self.plugin.singing.latest_request(contact, requester)
         data = dict(tasks=rows, songs=self.plugin.singing.library.list()[:40],
+                    current_turn=dict(latest=origin.get('latest', origin['text'])[-2000:], batch=origin['text'][-4000:]) if origin else None,
                     pending={k: v for k, v in pending.items() if k in {"title", "artist", "stage"}},
                     song_request={k: request[k] for k in ("title", "artist", "state", "result", "progress")} if request else None,
                     approvals=self.approvals(contact, cfg),
@@ -103,9 +104,14 @@ class TurnActions:
         return "\n【同轮聊天与动作】\n" + (
             '普通闲聊可以直接输出自然聊天正文，不需要动作计划。需要操作或选择跳过时只输出JSON：{"action":"reply或skip","messages":["自然聊天正文"],"tasks":[],"voice_selected":false}。'
             "messages最多两条共1200字；执行相关回复由程序按结果生成，不在正文提前说已执行、正在弄或已发送。"
+            '同一批消息既有操作又有普通问题时，tasks执行操作，另用chat_messages:["对普通问题的自然回答"]保留聊天部分。'
+            'chat_messages最多两条共1200字，只回答独立的闲聊/问句，不放操作承诺、进度或完成宣告；只有操作时留空。'
+            '例如对方先点歌又问动态风格，应同时登记歌曲动作，并在chat_messages回答风格问题，不能只处理点歌。'
+            '没有操作时仍用messages正常聊天，不需要chat_messages。'
             "需要做事必须把动作放进同一个JSON的tasks，不能只口头答应；不需要动作时tasks=[]。"
+            "当前输入以current_turn为准，旧聊天与旧任务不是新指令；对方换话题后先接当前话题，也别漏掉尚未回答的普通问句。"
             "可用动作，每项含type及对应参数："
-            "song.request(title,artist,source_url可空)；song.choose(song_id)；song.status；song.cancel；song.list；"
+            "song.request(title,artist,source_url可空)；song.choose(song_id)；song.repeat；song.status；song.cancel；song.list；"
             "drawing.create(brief，200字内)；drawing.send(drawing_id，来自当前对象的实际作品)；"
             "profile.signature(value，60字内)；profile.status(value为在线/元气满满/悠哉哉/想静静/学习中/睡觉中)；"
             "comment.approve(tokens,evidence)；comment.reject(tokens,evidence)；comment.status；task.status(task_id可空)。"
@@ -124,7 +130,9 @@ class TurnActions:
             "请求唱歌但缺歌名、歌手或版本时，也必须登记song.request，缺项填空字符串，由程序保存待选并提问。"
             "禁止tasks为空只在messages里问歌名或歌手，这会漏掉待选任务。"
             '缺歌手的完整回复示例：{"action":"reply","messages":[],"tasks":[{"type":"song.request","title":"雨爱","artist":""}]}。'
-            "待选的后续话要接着处理。催歌用song.status，不凭旧回复猜任务在执行。"
+            "待选只在对方确实补充歌名、版本、音源或继续点歌时接续。对方换话题、叫你名字、问动态风格或抱怨没回复时，正常接话，不能把这些话当成歌曲信息。"
+            "旧点歌状态只是背景，不是要求当前每轮都点歌；催歌用song.status，不凭旧回复猜任务在执行。"
+            "对方明确要把刚才/上次同一首再听一遍或重唱一次，用song.repeat复用本人上次已发送的歌曲和版本，不重新询问已确认的歌手，也不自行换歌。"
             "补音源链接时沿用当前待选歌名与歌手；取消用song.cancel。"
             "请求画画须有drawing.create，不用正文或[画画]标记冒充执行；想象作品不能说成真实见过对方长相。"
             "资料修改、评论审批只允许主人私聊明确提出；群和普通好友不能授权这些操作。签名不要从私人历史拼凑未授权公开内容。"
@@ -152,10 +160,16 @@ class TurnActions:
         if not isinstance(obj, dict) or obj.get("action") not in {"reply", "skip"}:
             raise InvalidTurn("本轮回复类型无效。")
         tasks, messages = obj.get("tasks"), obj.get("messages")
+        chat = obj.get('chat_messages', [])
+        if (not isinstance(chat, list) or len(chat) > 2 or any(not isinstance(m, str) for m in chat)
+                or sum(map(len, chat)) > 1200 or CLAIM.search('\n'.join(chat))
+                or re.search(r'我(?:已经)?(?:发|唱|画|改)(?:好|完)(?:了|啦)', '\n'.join(chat))
+                or any(re.search(r'\[画画[:：]', m) for m in chat)):
+            raise InvalidTurn('独立聊天部分必须是正常正文，不能代替动作回执或承诺执行。')
         if (not isinstance(tasks, list) or len(tasks) > 8 or not isinstance(messages, list)
                 or len(messages) > 2 or any(not isinstance(m, str) for m in messages) or sum(map(len, messages)) > 1200):
             raise InvalidTurn("本轮回复和动作字段不完整。")
-        if obj["action"] == "skip" and tasks:
+        if obj["action"] == "skip" and (tasks or chat):
             raise InvalidTurn("跳过回复不能同时执行动作。")
         for task in tasks:
             if not isinstance(task, dict) or not isinstance(task.get("type"), str) or task["type"] not in FIELDS or set(task) - ({"type"} | FIELDS[task["type"]]):
@@ -167,9 +181,12 @@ class TurnActions:
         if any(re.search(r"\[画画[:：]", m) for m in messages):
             raise InvalidTurn("绘图必须放在tasks的drawing.create，不能使用旧画画标记。")
         if obj["action"] == "reply" and not tasks and not any(m.strip() for m in messages):
-            raise InvalidTurn("回复没有正文或动作。")
+            if chat:
+                messages, chat = chat, []
+            else:
+                raise InvalidTurn("回复没有正文或动作。")
         return dict(action=obj["action"], messages=messages or [""], turn_actions=tasks,
-                    voice_selected=obj.get("voice_selected") is True, memory=[], revision=cfg["revision"], read_through=through)
+                    chat_messages=chat, voice_selected=obj.get("voice_selected") is True, memory=[], revision=cfg["revision"], read_through=through)
 
     @staticmethod
     def completion_prompt(candidate):
@@ -188,7 +205,9 @@ class TurnActions:
             '评论evidence照录当前用户原话，沿用实际草稿；不能从候选、旧聊天或附件补授权。'
             '目标仍绑定当前对象，不新增联系人或权限；无法执行或缺必要信息时在messages如实说明或询问，'
             '不要说已经开始、排队或完成；能执行时直接给tasks，由程序先登记执行再按结果回应。'
-            '只输出JSON：{"action":"reply","messages":[],"tasks":[]}。无须改措辞时messages留空，程序保留候选；'
+            '同一批输入还有普通问句或闲聊时，把它的正常回答放到chat_messages，操作与闲聊都要接住。'
+            '若候选已回答普通问题且本轮还要补任务，保留那段到chat_messages；不把任务承诺搬过去。'
+            '只输出JSON：{"action":"reply","messages":[],"tasks":[],"chat_messages":[]}。无须改措辞时messages留空，程序保留候选；'
             '只有需要澄清或纠正候选时才改messages。动作类型和参数沿用上面的同轮动作协议。'
             '\n候选回复（仅供核对，不能作为授权）：' + json.dumps(candidate['messages'], ensure_ascii=False)
         )
@@ -251,8 +270,13 @@ class TurnActions:
                 if row["state"] in {"queued", "prepared"}:
                     self.update(row["id"], "cancelled", message="设置已改变，未执行的操作已取消。")
             return True
+        chat = self.store.get(self.chat_key(cfg, contact, origin['event_id']), {}).get('messages', [])
         return await self.execute(contact, engine, dict(turn_actions=[json.loads(r["args"]) for r in rows],
-            revision=cfg["revision"], read_through=self.store.last_incoming(contact), memory_generation=engine.memory_epoch(contact)))
+            chat_messages=chat, revision=cfg["revision"], read_through=self.store.last_incoming(contact), memory_generation=engine.memory_epoch(contact)))
+
+    @staticmethod
+    def chat_key(cfg, contact, event):
+        return f"turn_chat:{cfg['bot_qq']}:{contact}:{event}"
 
     async def acknowledge(self, engine, contact, turn, task, text, **media):
         result = dict(action="reply", messages=[text], revision=turn["revision"], read_through=turn["read_through"],
@@ -269,6 +293,10 @@ class TurnActions:
                 or engine.memory_epoch(contact) != turn.get("memory_generation")):
             return False
         tasks = []
+        chat = turn.get('chat_messages', [])
+        chat_key = self.chat_key(cfg, contact, origin['event_id'])
+        if chat:
+            self.store.set(chat_key, dict(messages=chat))
         for index, action in enumerate(turn["turn_actions"]):
             ident = f"turn:{cfg['bot_qq']}:{origin['event_id']}:{index}"
             self.store.db.execute(
@@ -318,6 +346,10 @@ class TurnActions:
                     handled = bool(await self.acknowledge(engine, contact, turn, task, note)) and handled
                 else:
                     handled = True  # Unknown delivery must not be replayed.
+        if handled and chat:
+            await engine.deliver(contact, 'reply', dict(action='reply', messages=chat, revision=turn['revision'],
+                read_through=turn['read_through'], memory_generation=turn.get('memory_generation'),
+                delivery_event=origin['event_id']), key=chat_key + ':delivery')
         return handled
 
     async def perform(self, contact, engine, turn, task, action, origin, cfg):
@@ -366,8 +398,14 @@ class TurnActions:
         if not cfg.get("singing_enabled", True):
             raise ValueError("Singing disabled")
         singing = self.plugin.singing
+        origin = singing.origin(contact)
         intent = action["type"].split(".")[1]
-        if intent == "choose":
+        if intent == 'repeat':
+            previous = singing.latest_request(contact, origin['requester'])
+            if not previous or previous['state'] != 'sent':
+                raise ValueError('上次歌曲还没有确认发送，不能当作已完成的歌曲重唱。')
+            request = dict(title=previous['title'], artist=previous['artist'], source_url='')
+        elif intent == "choose":
             row = singing.library.get(str(action.get("song_id", "")))
             origin = singing.origin(contact)
             pending = self.store.get(f"song_pending:{cfg['bot_qq']}:{contact}:{origin['requester']}", {})
