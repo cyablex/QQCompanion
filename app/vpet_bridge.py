@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from settings import ROOT, local_token
 from creative_projects import CreativeProjects
+from diary_book import DiaryBook
 from message_channels import route
 from vpet_messages import PetMessages
 import vpet_runtime
@@ -144,10 +145,14 @@ class VPetBridge:
                     else f"正在学唱《{song['title']}》" if song and song['state'] == 'processing'
                     else f"《{song['title']}》等待准备或发送" if song
                     else '等你来玩')
+        diary = DiaryBook(self.store.db, cfg, self.root).activity()
+        if diary.get('phase') == 'writing' and not active and not song:
+            activity = '正在写日记'
         return dict(game_mode=bool(cfg.get('game_mode')), enabled=vpet_runtime.preferences(self.root).get('enabled') is True,
                     ready=self.engine.allowed(cfg, cfg['owner_qq']), activity=activity,
                     generation=self.engine.memory_epoch(cfg['owner_qq']),
                     scope=cfg['bot_qq'] + ':' + cfg['owner_qq'],
+                    diary=diary,
                     character='大肥鱼·蓝发女仆' if (Path(self.root) / 'vpet/characters/dafeiyu-v1/character.json').is_file() else 'VPet演示形象',
                     project=project['title'] if project else '', next_step=project['next_step'] if project else '')
 
@@ -228,6 +233,51 @@ class VPetBridge:
         # current incoming marker and pending answer, and do not call a model.
         return dict(saved=True, state='recorded')
 
+    async def write_diary(self, value):
+        from datetime import datetime
+        from store import TZ
+        if (not isinstance(value, dict) or set(value) != {'day', 'scope', 'generation'}
+                or not isinstance(value['day'], str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', value['day'])
+                or type(value['generation']) is not int):
+            raise ValueError('请选择有效的日记日期。')
+        datetime.strptime(value['day'], '%Y-%m-%d')
+        if value['day'] > datetime.now(TZ).strftime('%Y-%m-%d'):
+            raise ValueError('不能提前写未来的日记。')
+        cfg = self.engine.config_reader()
+        owner = cfg['owner_qq']
+        if (value['scope'] != cfg['bot_qq'] + ':' + owner or value['generation'] != self.engine.memory_epoch(owner)
+                or not cfg.get('memory_enabled') or cfg.get('game_mode') or not self.engine.allowed(cfg, owner)):
+            raise ValueError('大肥鱼正在休息，或记录已经变化，请刷新后再试。')
+        diary = self.plugin.daily_diary
+        if diary.lock.locked():
+            return dict(accepted=False, state='writing')
+        key = f"diary_activity:{cfg['bot_qq']}:{owner}"
+        job = secrets.token_hex(16)
+        self.store.set(key, dict(job_id=job, phase='queued', day=value['day'], started=time.time(), generation=value['generation']))
+
+        async def draft():
+            fresh = self.engine.config_reader()
+            if (fresh['owner_qq'] != owner or fresh['bot_qq'] != cfg['bot_qq']
+                    or self.engine.memory_epoch(owner) != value['generation']):
+                return
+            try:
+                saved = await diary.write(self.engine, fresh, value['day'])
+                current = self.store.get(key, {})
+                if not saved and current.get('job_id') == job and self.engine.memory_epoch(owner) == value['generation']:
+                    self.store.set(key, dict(current, phase='skipped'))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.store.set('last_memory_error', type(exc).__name__)
+                current = self.store.get(key, {})
+                if current.get('job_id') == job:
+                    self.store.set(key, dict(current, phase='failed'))
+
+        task = asyncio.create_task(draft())
+        self.chat_tasks.add(task)
+        task.add_done_callback(self.chat_tasks.discard)
+        return dict(accepted=True, state='queued')
+
     async def deliver(self, contact, text, **media):
         target = DELIVERY.get()
         if target is None:
@@ -254,6 +304,8 @@ class VPetBridge:
             return await self.interact(value)
         if method == 'POST' and path == '/scene':
             return await self.scene(value)
+        if method == 'POST' and path == '/diary':
+            return await self.write_diary(value)
         if method == 'POST' and path == '/chat':
             return await self.chat(value)
         if method == 'GET' and path == '/messages':
@@ -265,8 +317,8 @@ class VPetBridge:
             return dict(messages=self.store.history(self.engine.config_reader()['owner_qq'], limit=40, max_chars=16000))
         if method == 'GET' and path.startswith('/media/'):
             return await self.media(path.removeprefix('/media/'))
-        if method == 'POST' and path == '/open' and isinstance(value, dict) and set(value) == {'page'}:
-            vpet_runtime.open_console(value['page'], self.root)
+        if method == 'POST' and path == '/open' and isinstance(value, dict) and set(value) in ({'page'}, {'page', 'day'}):
+            vpet_runtime.open_console(value['page'], self.root, value.get('day', ''))
             return dict(opened=True)
         raise ValueError('不支持的桌宠请求。')
 

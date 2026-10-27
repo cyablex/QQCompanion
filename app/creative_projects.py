@@ -67,6 +67,8 @@ class CreativeProjects:
         try:
             project = self.get(ident)
             project.update(stage=stage, next_step=next_step.strip())
+            if stage == 'finished' and not project.get('completed'):
+                project['completed'] = time.time()
             self._write(project)
             self.db.execute('COMMIT')
             return project

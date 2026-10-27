@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using LinePutScript;
 using VPet_Simulator.Core;
@@ -65,6 +66,10 @@ public sealed class PetWindow : Window, IController
     private readonly Grid stage;
     private readonly PetVisuals visuals;
     private readonly PetScenes scenes;
+    private PeekWindow? peek;
+    private Action? bubbleAction;
+    private bool diarySnapshot;
+    private string diaryJob = "", diaryDay = "";
     private readonly Queue<SceneEvent> sceneEvents = new();
     private bool recordingScenes, backendReady;
     private string backendActivity = "";
@@ -103,9 +108,10 @@ public sealed class PetWindow : Window, IController
         bubblePopup = new Popup { PlacementTarget = this, Placement = PlacementMode.Top, AllowsTransparency = true, StaysOpen = true,
             Child = new Border { Background = Brushes.White, CornerRadius = new CornerRadius(12), Padding = new Thickness(12),
                 MaxWidth = 330, MaxHeight = 220, Child = new ScrollViewer { Content = bubble, VerticalScrollBarVisibility = ScrollBarVisibility.Auto } } };
-        bubble.MouseLeftButtonDown += (_, _) => OpenChat();
+        bubble.MouseLeftButtonDown += (_, _) => { if (bubbleAction is not null) bubbleAction(); else OpenChat(); };
         stage = new Grid { Height = 500 * zoom, Width = 500 * zoom };
         visuals = new PetVisuals(root);
+        visuals.ReducedMotion = preferences.ReducedMotion || !SystemParameters.ClientAreaAnimation;
         scenes = new PetScenes(this, visuals);
         stack.Children.Add(stage);
         stack.Children.Add(new Border { Child = status, Background = Brushes.WhiteSmoke, CornerRadius = new CornerRadius(8), Padding = new Thickness(7, 4, 7, 4), Margin = new Thickness(20, 3, 20, 3) });
@@ -115,11 +121,11 @@ public sealed class PetWindow : Window, IController
         media = new DesktopMedia(this, client, root) { Quiet = preferences.Quiet };
         tray = new System.Windows.Forms.NotifyIcon { Text = "大肥鱼桌宠", Icon = System.Drawing.SystemIcons.Application, Visible = true };
         var trayMenu = new System.Windows.Forms.ContextMenuStrip();
-        trayMenu.Items.Add("显示 / 隐藏", null, (_, _) => ToggleVisible());
+        trayMenu.Items.Add("潜水收起 / 恢复", null, (_, _) => ToggleVisible());
         trayMenu.Items.Add("和大肥鱼说话", null, (_, _) => OpenChat());
         trayMenu.Items.Add("安静陪伴 / 恢复", null, (_, _) => SetQuiet(!preferences.Quiet));
         trayMenu.Items.Add("退出桌宠", null, (_, _) => Quit());
-        tray.ContextMenuStrip = trayMenu; tray.DoubleClick += (_, _) => { Show(); OpenChat(); };
+        tray.ContextMenuStrip = trayMenu; tray.DoubleClick += (_, _) => { RestoreFromPeek(); OpenChat(); };
         var menu = new ContextMenu();
         AddMenu(menu, "和大肥鱼说话", OpenChat);
         AddMenu(menu, "摸摸头", () => pet?.DisplayTouchHead());
@@ -133,10 +139,13 @@ public sealed class PetWindow : Window, IController
         AddMenu(menu, "安静陪伴 / 恢复", () => SetQuiet(!preferences.Quiet));
         AddMenu(menu, "自动散步：开 / 关", () => { preferences.Wander = !preferences.Wander; SavePreferences(); ShowBubble(preferences.Wander ? "空闲时偶尔走走。" : "就在这里陪你。"); });
         AddMenu(menu, "日常小动作：开 / 关", () => { preferences.DailyActivities = !preferences.DailyActivities; SavePreferences(); });
+        AddMenu(menu, "减少动效：开 / 关", () => { preferences.ReducedMotion = !preferences.ReducedMotion; visuals.ReducedMotion = preferences.ReducedMotion || !SystemParameters.ClientAreaAnimation; SavePreferences(); });
         AddMenu(menu, "停止播放", media.Stop);
-        AddMenu(menu, "隐藏到托盘", ToggleVisible);
+        AddMenu(menu, "潜水收起", ToggleVisible);
+        AddMenu(menu, "完全隐藏到托盘", HideCompletely);
         menu.Items.Add(new Separator());
         AddMenu(menu, "打开共同经历", () => _ = OpenPage("creative"));
+        AddMenu(menu, "打开鲸鱼日记", OpenDiary);
         AddMenu(menu, "打开日历", () => _ = OpenPage("calendar"));
         AddMenu(menu, "打开曲库", () => _ = OpenPage("songbook"));
         menu.Items.Add(new Separator());
@@ -181,11 +190,11 @@ public sealed class PetWindow : Window, IController
                 pet.Load_3_BindingTimer();
                 pet.Load_4_Start();
                 pet.SetMoveMode(true, false, 1200);
-                pet.Event_TouchHead += () => Dispatcher.InvokeAsync(() => { scenes.React(); _ = Interact("head"); });
-                pet.Event_TouchBody += () => Dispatcher.InvokeAsync(() => { scenes.React(); _ = Interact("body"); });
+                pet.Event_TouchHead += () => Dispatcher.InvokeAsync(() => { scenes.React("head"); _ = Interact("head"); });
+                pet.Event_TouchBody += () => Dispatcher.InvokeAsync(() => { scenes.React("body"); _ = Interact("body"); });
                 pet.GraphDisplayHandler += info => {
                     if (info.Type.ToString().StartsWith("Raised"))
-                        Dispatcher.InvokeAsync(() => { scenes.CancelRice(); scenes.React(); _ = Interact("lift"); });
+                        Dispatcher.InvokeAsync(() => { scenes.CancelRice(); scenes.React("lift"); _ = Interact("lift"); });
                 };
                 pet.ToolBar.Visibility = Visibility.Collapsed;
                 loading = false;
@@ -194,6 +203,7 @@ public sealed class PetWindow : Window, IController
             catch (Exception ex) { status.Text = "桌宠加载失败，请查看日志"; File.AppendAllText(Path.Combine(root, "logs", "vpet-host.log"), ex + Environment.NewLine); }
         };
         Closed += (_, _) => { poll.Stop(); bubbleTimer.Stop(); positionTimer.Stop(); wanderTimer.Stop(); SavePreferences();
+            peek?.Close(); peek = null;
             bubblePopup.IsOpen = false; scenes.Dispose(); sceneEvents.Clear(); tray.Visible = false; tray.Dispose(); media.Dispose();
             Chat.ShuttingDown = true; Chat.Close(); pet?.Dispose(); client.Dispose(); if (!quitting) Disable(); };
     }
@@ -206,6 +216,7 @@ public sealed class PetWindow : Window, IController
 
     private void ShowBubble(string text)
     {
+        bubbleAction = null;
         bubble.Text = text; bubblePopup.IsOpen = IsVisible;
         bubbleTimer.Stop(); bubbleTimer.Start();
     }
@@ -230,7 +241,7 @@ public sealed class PetWindow : Window, IController
             if (data.GetProperty("game_mode").GetBoolean() || !data.GetProperty("enabled").GetBoolean()) { quitting = true; Close(); return; }
             long current = data.GetProperty("generation").GetInt64();
             string currentScope = data.GetProperty("scope").GetString()!;
-            if (generation.HasValue && (generation != current || scope != currentScope)) { scenes.CancelRice(); sceneEvents.Clear(); media.Reset(); Chat.ResetMemory(); seen.Clear(); bubblePopup.IsOpen = false; }
+            if (generation.HasValue && (generation != current || scope != currentScope)) { scenes.CancelRice(); sceneEvents.Clear(); media.Reset(); Chat.ResetMemory(); seen.Clear(); bubblePopup.IsOpen = false; diarySnapshot = false; diaryJob = diaryDay = ""; peek?.ClearNotice(); }
             generation = current;
             scope = currentScope;
             backendReady = data.GetProperty("ready").GetBoolean();
@@ -250,6 +261,7 @@ public sealed class PetWindow : Window, IController
             if (acknowledgements.Count > 0) await Request("/ack", new { ids = acknowledgements });
             await Chat.RefreshHistory();
             await FlushScenes();
+            CheckDiary(data);
         }
         catch (Exception) { status.Text = "后台连接中，互动动画仍可使用"; }
         finally { polling = false; }
@@ -270,9 +282,9 @@ public sealed class PetWindow : Window, IController
         finally { interacting = false; }
     }
 
-    private async Task OpenPage(string page)
+    private async Task OpenPage(string page, string day = "")
     {
-        try { await Request("/open", new { page }); }
+        try { if (day == "") await Request("/open", new { page }); else await Request("/open", new { page, day }); }
         catch (Exception) { ShowBubble("控制台暂时没打开，可以从原来的桌面入口进入。"); }
     }
 
@@ -288,13 +300,44 @@ public sealed class PetWindow : Window, IController
     }
 
     public void Note(string text) { if (!quitting) ShowBubble(text); }
+    public void OpenDiary() { peek?.ClearNotice(); _ = OpenPage("diary", diaryDay); }
+    private void CheckDiary(JsonElement data)
+    {
+        if (!data.TryGetProperty("diary", out var diary)) return;
+        bool ready = diary.TryGetProperty("phase", out var phase) && phase.GetString() == "ready";
+        string job = ready && diary.TryGetProperty("job_id", out var id) ? id.GetString() ?? "" : "";
+        if (!diarySnapshot) { diarySnapshot = true; diaryJob = job; return; }
+        if (!ready || job == "" || job == diaryJob || !backendReady) return;
+        diaryJob = job; diaryDay = diary.GetProperty("day").GetString() ?? "";
+        string title = diary.TryGetProperty("title", out var value) ? value.GetString() ?? "今天的日记" : "今天的日记";
+        if (IsVisible) { ShowBubble("日记写好啦：" + title + "。点这里翻开。"); bubbleAction = OpenDiary; }
+        peek?.DiaryReady(title);
+    }
     public void OpenChat() { if (quitting) return; Chat.Show(); Chat.Activate(); }
     private void Quit() { Disable(); quitting = true; Close(); }
-    private void ToggleVisible() { if (IsVisible) { scenes.CancelRice(); Hide(); bubblePopup.IsOpen = false; media.Stop(); media.Quiet = true; } else { Show(); media.Quiet = preferences.Quiet; KeepOnScreen(); } }
+    private void HideCompletely() { scenes.CancelRice(); FreezePetMovement(); Hide(); peek?.Hide(); Chat.Hide(); bubblePopup.IsOpen = false; media.Stop(); media.Quiet = true; }
+    private void ToggleVisible()
+    {
+        if (!IsVisible) { RestoreFromPeek(); return; }
+        HideCompletely();
+        peek ??= new PeekWindow(this, visuals.Portrait);
+        var area = SystemParameters.WorkArea;
+        peek.Left = Math.Clamp(Left + Width / 2 - peek.Width / 2, area.Left, area.Right - peek.Width);
+        peek.Top = Math.Clamp(Top + stage.Height - peek.Height, area.Top, area.Bottom - peek.Height);
+        peek.Show();
+        if (!visuals.ReducedMotion) peek.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromSeconds(.2)));
+    }
+    public void RestoreFromPeek()
+    {
+        if (quitting) return;
+        if (peek?.IsVisible is true) { Left = peek.Left + peek.Width / 2 - Width / 2; Top = peek.Top + peek.Height - stage.Height; peek.Hide(); }
+        Show(); media.Quiet = preferences.Quiet; KeepOnScreen(); SavePreferences();
+        if (!visuals.ReducedMotion) BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromSeconds(.18)));
+    }
     private void Walk()
     {
         if (pet is null || preferences.Quiet || pet.isPress || scenes.Feeding) return;
-        if (pet.DisplayType.Type == GraphInfo.GraphType.Default) pet.DisplayMove();
+        if (pet.DisplayType.Type == GraphInfo.GraphType.Default) { scenes.StartWalk(); pet.DisplayMove(); }
     }
     private void SetQuiet(bool value)
     {
@@ -407,6 +450,7 @@ public sealed class WindowPreferences
     public bool Quiet { get; set; }
     public bool Wander { get; set; } = true;
     public bool DailyActivities { get; set; } = true;
+    public bool ReducedMotion { get; set; }
     public void NormalizeSize()
     {
         if (!double.IsFinite(Zoom) || Zoom <= 0) Zoom = .52;

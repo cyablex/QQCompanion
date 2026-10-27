@@ -3,6 +3,7 @@ import asyncio
 import json
 import re
 import time
+import uuid
 from datetime import datetime, timedelta
 
 from personality import build_personality
@@ -56,27 +57,37 @@ class DailyDiary:
                 '只用下面同一天的消息，有证据的事才作为事实。只输出JSON：'
                 '{"title":"自然的日记题目","text":"日记正文，段落用换行","source_ids":[所依据的真实消息编号]}。'
             )
-            raw = await engine.generate_aux('daily_diary', system, [dict(role='user', content=json.dumps(
-                dict(date=day, messages=[source[k] for k in sorted(source)]), ensure_ascii=False))], contact=owner)
-            value = json.loads(re.sub(r'^```(?:json)?\s*|\s*```$', '', raw.strip()))
-            text, ids = value.get('text'), value.get('source_ids')
-            minimum = 350 if len(source) >= 12 else 200
-            if (not isinstance(text, str) or not minimum <= len(text) <= 1800 or '\n' not in text
-                    or not isinstance(ids, list) or not ids or any(type(i) is not int or i not in source for i in ids)):
-                raise ValueError('日记正文或来源不完整，未保存。')
-            fresh = engine.config_reader()
-            if (engine.memory_epoch(owner) != generation or fresh['revision'] != cfg['revision']
-                    or fresh['owner_qq'] != owner or not engine.allowed(fresh, owner) or not fresh.get('memory_enabled')):
-                return False
-            for ident in ids:
-                row = self.db.execute('SELECT text FROM messages WHERE id=? AND contact=?', (ident, owner)).fetchone()
-                if not row or not row['text'].startswith(source[ident]['text']):
+            activity_key = f"diary_activity:{cfg['bot_qq']}:{owner}"
+            job_id = uuid.uuid4().hex
+            self.store.set(activity_key, dict(job_id=job_id, phase='writing', day=day, started=time.time(), generation=generation))
+            try:
+                raw = await engine.generate_aux('daily_diary', system, [dict(role='user', content=json.dumps(
+                    dict(date=day, messages=[source[k] for k in sorted(source)]), ensure_ascii=False))], contact=owner)
+                value = json.loads(re.sub(r'^```(?:json)?\s*|\s*```$', '', raw.strip()))
+                text, ids = value.get('text'), value.get('source_ids')
+                minimum = 350 if len(source) >= 12 else 200
+                if (not isinstance(text, str) or not minimum <= len(text) <= 1800 or '\n' not in text
+                        or not isinstance(ids, list) or not ids or any(type(i) is not int or i not in source for i in ids)):
+                    raise ValueError('日记正文或来源不完整，未保存。')
+                fresh = engine.config_reader()
+                if (engine.memory_epoch(owner) != generation or fresh['revision'] != cfg['revision']
+                        or fresh['owner_qq'] != owner or not engine.allowed(fresh, owner) or not fresh.get('memory_enabled')):
                     return False
-            anchor = source[max(ids)]
-            # Replace today's authored entry; evidence excerpts remain untouched.
-            self.db.execute("DELETE FROM cm_items WHERE contact=? AND kind='journal' AND key=?", (owner, day))
-            self.db.execute("INSERT INTO cm_items(contact,kind,key,text,source_id,source_role,evidence,status,phase,created,updated) VALUES(?,'journal',?,?,?,?,?,'current','reflection',?,?)",
-                            (owner, day, text.strip(), anchor['id'], anchor['role'], anchor['text'][:100], anchor['created'], now))
-            self.store.set(f'journal_sources:{owner}:{day}', dict(ids=ids, title=str(value.get('title', '这一天'))[:50], generation=generation))
-            self.store.set(key, dict(calls=previous.get('calls', 0) + 1, attempt=now, last_id=latest))
-            return True
+                for ident in ids:
+                    row = self.db.execute('SELECT text FROM messages WHERE id=? AND contact=?', (ident, owner)).fetchone()
+                    if not row or not row['text'].startswith(source[ident]['text']):
+                        return False
+                anchor = source[max(ids)]
+                # Replace today's authored entry; evidence excerpts remain untouched.
+                self.db.execute("DELETE FROM cm_items WHERE contact=? AND kind='journal' AND key=?", (owner, day))
+                self.db.execute("INSERT INTO cm_items(contact,kind,key,text,source_id,source_role,evidence,status,phase,created,updated) VALUES(?,'journal',?,?,?,?,?,'current','reflection',?,?)",
+                                (owner, day, text.strip(), anchor['id'], anchor['role'], anchor['text'][:100], anchor['created'], now))
+                self.store.set(f'journal_sources:{owner}:{day}', dict(ids=ids, title=str(value.get('title', '这一天'))[:50], generation=generation))
+                self.store.set(key, dict(calls=previous.get('calls', 0) + 1, attempt=now, last_id=latest))
+                self.store.set(activity_key, dict(job_id=job_id, phase='ready', day=day, title=str(value.get('title', '这一天'))[:50],
+                                                  completed=time.time(), generation=generation))
+                return True
+            finally:
+                current = self.store.get(activity_key, {})
+                if current.get('job_id') == job_id and current.get('phase') == 'writing':
+                    self.store.set(activity_key, dict(current, phase='failed', completed=time.time()))

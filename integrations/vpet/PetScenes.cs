@@ -13,13 +13,15 @@ public sealed class PetScenes : IDisposable
     private readonly Stopwatch clock = Stopwatch.StartNew();
     private double last, until, reactionUntil, manualUntil;
     private string idle = "idle", backend = "";
+    private string reactionPose = "head";
+    private double previousLeft;
     private RiceWindow? bowl;
     private RiceModel? rice;
     private SceneStamp? stamp;
     private bool recordedCatch, disposed;
     public RicePhase? RicePhase => rice?.Phase;
     public bool Feeding => rice is not null;
-    public bool CanWander => !Feeding && idle == "idle" && clock.Elapsed.TotalSeconds >= manualUntil;
+    public bool CanWander => !Feeding && !backend.StartsWith("正在") && idle == "idle" && clock.Elapsed.TotalSeconds >= manualUntil;
     private string? activity;
     public string? Activity { get => activity; private set { if (activity == value) return; activity = value; owner.UpdateActivity(); } }
     public PetScenes(PetWindow owner, PetVisuals visuals)
@@ -28,7 +30,8 @@ public sealed class PetScenes : IDisposable
         timer.Tick += (_, _) => Tick(); timer.Start();
     }
     public void Backend(string value) { backend = value; }
-    public void React() { reactionUntil = clock.Elapsed.TotalSeconds + 2; }
+    public void React(string kind = "head") { reactionPose = kind != "lift" && visuals.CurrentPose is "read" or "write" or "rest" ? visuals.CurrentPose : kind; reactionUntil = clock.Elapsed.TotalSeconds + 2; visuals.React(kind, clock.Elapsed.TotalSeconds); }
+    public void StartWalk() { idle = "idle"; manualUntil = 0; until = clock.Elapsed.TotalSeconds + 12; }
     public void Choose(string pose)
     {
         if (Feeding) return;
@@ -62,6 +65,7 @@ public sealed class PetScenes : IDisposable
     {
         if (disposed) return;
         double now = clock.Elapsed.TotalSeconds, dt = Math.Min(.1, Math.Max(0, now - last)); last = now;
+        double movement = owner.Left - previousLeft; previousLeft = owner.Left;
         if (!owner.IsVisible) return;
         if (rice is not null && bowl is not null)
         {
@@ -80,6 +84,8 @@ public sealed class PetScenes : IDisposable
             {
                 owner.RecordScene("rice_finished", stamp); CancelRice();
                 reactionUntil = now + 2; owner.Note("白米饭吃完啦。🐟");
+                visuals.React("head", now);
+                reactionPose = "head";
             }
             else if (rice.Phase == DafeiyuPet.RicePhase.Chasing)
             {
@@ -94,11 +100,13 @@ public sealed class PetScenes : IDisposable
             }
             return;
         }
-        if (now < reactionUntil) { Activity = null; visuals.Show("excited", now); return; }
-        if (now < manualUntil) { Activity = idle == "stretch" ? "伸个懒腰" : idle == "draw" ? "随手涂几笔 · 陪伴动作" : "翻翻手边的书 · 陪伴动作"; visuals.Show(idle, now); return; }
+        if (now < reactionUntil) { Activity = null; visuals.Show(reactionPose, now); return; }
+        if (backend == "正在写日记") { Activity = null; owner.FreezePetMovement(); visuals.Show("write", now); return; }
+        if (Math.Abs(movement) > .05 && !owner.PetPressed && !owner.QuietMode) { Activity = "散步一下"; visuals.Show("walk_" + (movement < 0 ? "left" : "right") + ((int)(now * 5) % 2), now, true); return; }
+        if (now < manualUntil) { Activity = idle == "stretch" ? "伸个懒腰" : idle == "draw" ? "随手涂几笔 · 陪伴动作" : "翻翻手边的书 · 陪伴动作"; visuals.Show(idle == "draw" ? "write" : idle, now); return; }
         if (owner.QuietMode) { Activity = "安静休息"; visuals.Show("rest", now); return; }
         if (owner.PetPressed) { Activity = null; visuals.Show("excited", now); return; }
-        if (backend.StartsWith("正在画画")) { Activity = null; visuals.Show("draw", now); return; }
+        if (backend.StartsWith("正在画画")) { Activity = null; visuals.Show("write", now); return; }
         if (backend.StartsWith("正在") && backend != "正在休息") { Activity = null; visuals.Show("idle", now); return; }
         if (now >= until)
         {
@@ -107,7 +115,7 @@ public sealed class PetScenes : IDisposable
             if (idle != "idle") owner.FreezePetMovement();
         }
         Activity = idle switch { "read" => "翻翻手边的书 · 陪伴动作", "draw" => "随手涂几笔 · 陪伴动作", "stretch" => "伸个懒腰", _ => null };
-        visuals.Show(idle, now);
+        visuals.Show(idle == "draw" ? "write" : idle, now);
     }
     public void Dispose() { if (disposed) return; disposed = true; timer.Stop(); CancelRice(); }
 }

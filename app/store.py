@@ -66,6 +66,7 @@ class Store:
             self.db.execute(
                 "UPDATE calls SET state='interrupted' WHERE state='reserved'"
             )
+            self.db.execute("UPDATE state SET value=json_set(value,'$.phase','interrupted') WHERE key LIKE 'diary_activity:%' AND json_extract(value,'$.phase') IN ('writing','queued')")
             self.db.execute(
                 "UPDATE qzone_approvals SET state='unknown' WHERE state='sending'"
             )
@@ -177,6 +178,7 @@ class Store:
         self.db.execute("DELETE FROM state WHERE key LIKE ?", (f"vpet_msg:%:{contact}:%",))
         self.db.execute("DELETE FROM state WHERE key LIKE ?", (f"turn_chat:%:{contact}:%",))
         self.db.execute("DELETE FROM state WHERE key LIKE ?", (f'vpet_scene:%:{contact}:%',))
+        self.db.execute("DELETE FROM state WHERE key LIKE ? OR key LIKE ?", (f'diary_book:%:{contact}:%', f'diary_activity:%:{contact}'))
         self.db.execute("DELETE FROM state WHERE key LIKE ? OR key LIKE ?", (f'song_offer:%:{contact}', f'outreach_result:%:{contact}'))
         self.db.execute("DELETE FROM state WHERE key LIKE ? OR key LIKE ?", (f'journal_sources:{contact}:%', f'journal_write:{contact}:%'))
         # Keep command deduplication tombstones, but remove private acknowledgments.

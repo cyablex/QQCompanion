@@ -77,7 +77,9 @@ def prepare(root=ROOT, sdk=None):
     from prepare_pet_character import prepare as prepare_character
     prepare_character(root)
     from prepare_pet_poses import prepare as prepare_poses
+    from prepare_companion_art import prepare as prepare_companion_art
     prepare_poses(root)
+    prepare_companion_art(root)
     subprocess.run([str(sdk), 'publish', str(root / 'integrations/vpet/DafeiyuPet.csproj'), '-c', 'Release',
                     '-r', 'win-x64', '--self-contained', 'false', '-o', str(root / 'vpet/host')], env=env, check=True)
     print(json.dumps(dict(prepared=True, assets=len(selected), enabled=False)))

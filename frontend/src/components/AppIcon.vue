@@ -1,6 +1,10 @@
 <script setup lang="ts">
 defineProps<{ name: string; size?: number }>()
 const paths: Record<string, string> = {
+  pen: 'm14 4 6 6M4 20l5-1L21 7l-4-4L5 15Zm0 0 5-1',
+  bookmark: 'M6 3h12v18l-6-4-6 4Z',
+  search: 'M16 16l5 5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',
+  sparkle: 'm12 2 3 7 7 3-7 3-3 7-3-7-7-3 7-3Z',
   pet: 'M7 4 3 3v7a9 9 0 0 0 18 0V3l-4 1M8 11h.01M16 11h.01M10 15h4',
   calendar: 'M4 5h16v16H4ZM8 3v4m8-4v4M4 10h16M8 14h2m4 0h2M8 18h2',
   minimize: 'M5 12h14', maximize: 'M5 5h14v14H5Z', restore: 'M8 8h11v11H8ZM5 15H4V4h11v1',

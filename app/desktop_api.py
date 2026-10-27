@@ -27,11 +27,12 @@ from budget_breakdown import read_budget, period_totals
 from art_gallery import ArtGallery
 from creative_projects import CreativeProjects
 from experience_calendar import ExperienceCalendar
+from diary_book import DiaryBook
 import vpet_runtime
 from song_previews import SongPreviews
 from song_voice import singing_voice
 
-VERSION = "V5.10"
+VERSION = "V5.11"
 TZ = timezone(timedelta(hours=8))
 FEATURES = (
     "proactive",
@@ -130,6 +131,9 @@ class DesktopAPI:
         value = read_json(path)
         if path.exists():
             path.unlink()
+        if value.get('page') == 'diary' and time.time() - value.get('created', 0) < 30:
+            day = value.get('day', '')
+            return 'diary:' + day if isinstance(day, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', day) else 'diary'
         return value.get('page') if value.get('page') in {'home', 'creative', 'calendar', 'songbook'} and time.time() - value.get('created', 0) < 30 else None
 
     @result
@@ -137,6 +141,90 @@ class DesktopAPI:
         with sqlite3.connect((ROOT / 'data/companion.sqlite3').as_uri() + '?mode=ro', uri=True, timeout=2) as db:
             db.row_factory = sqlite3.Row
             return ExperienceCalendar(db, read_settings(), ROOT).month(month, query)
+
+    @result
+    def get_diary_book(self, month, query=''):
+        with sqlite3.connect((ROOT / 'data/companion.sqlite3').as_uri() + '?mode=ro', uri=True, timeout=2) as db:
+            db.row_factory = sqlite3.Row
+            cfg = read_settings()
+            return dict(DiaryBook(db, cfg, ROOT).month(month, query), quiet=bool(read_json(ROOT / 'data/vpet-window.json').get('Quiet')) or bool(cfg.get('game_mode')))
+
+    @result
+    def request_diary_write(self, day, scope, generation):
+        import urllib.request
+        import urllib.error
+        payload = json.dumps(dict(day=day, scope=scope, generation=generation)).encode()
+        request = urllib.request.Request('http://127.0.0.1:8766/diary', data=payload,
+                    headers={'Authorization': 'Bearer ' + (ROOT / 'config/vpet-bridge.token').read_text().strip(), 'Content-Type': 'application/json'})
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                value = json.load(response)
+            if not value.get('ok'):
+                raise ValueError('这次日记还没有开始，可以稍后再试。')
+            return value['data']
+        except urllib.error.HTTPError as exc:
+            try:
+                message = json.load(exc).get('message', '这次日记没有开始，请刷新后再试。')
+            except (ValueError, OSError):
+                message = '这次日记没有开始，请刷新后再试。'
+            raise ValueError(message) from None
+        except OSError:
+            raise ValueError('聊天后台暂未连接，连接后再请她写日记。') from None
+
+    @result
+    def diary_asset_preview(self, day, project_id, kind, ident):
+        if not isinstance(day, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', day):
+            raise ValueError('请选择有效日期。')
+        with sqlite3.connect((ROOT / 'data/companion.sqlite3').as_uri() + '?mode=ro', uri=True, timeout=2) as db:
+            db.row_factory = sqlite3.Row
+            page = next((p for p in DiaryBook(db, read_settings(), ROOT).month(day[:7])['pages'] if p['date'] == day), None)
+            asset = next((a for a in page['assets'] if a['project_id'] == project_id and a['kind'] == kind and a['id'] == ident), None) if page else None
+            if not asset or asset.get('state') != 'ready':
+                raise ValueError('这件作品已不可用，相关日记仍然保留。')
+        result = self.song_preview(ident) if kind == 'song' else self.drawing_preview(ident, asset['scope'])
+        if not result['ok']:
+            raise ValueError(result['message'])
+        return result['data']
+
+    @result
+    def bookmark_diary(self, day, enabled):
+        with self._lock, sqlite3.connect(ROOT / 'data/companion.sqlite3', isolation_level=None, timeout=5) as db:
+            db.row_factory = sqlite3.Row
+            return DiaryBook(db, read_settings(), ROOT).bookmark(day, enabled)
+
+    @result
+    def diary_illustration(self, theme):
+        return DiaryBook(None, read_settings(), ROOT).illustration(theme)
+
+    @result
+    def diary_art_choices(self):
+        with sqlite3.connect((ROOT / 'data/companion.sqlite3').as_uri() + '?mode=ro', uri=True, timeout=2) as db:
+            db.row_factory = sqlite3.Row
+            return DiaryBook(db, read_settings(), ROOT).art_choices()
+
+    @result
+    def choose_diary_art(self, day, selection):
+        with self._lock, sqlite3.connect(ROOT / 'data/companion.sqlite3', isolation_level=None, timeout=5) as db:
+            db.row_factory = sqlite3.Row
+            return DiaryBook(db, read_settings(), ROOT).choose_art(day, selection)
+
+    @result
+    def diary_page_art(self, day):
+        with sqlite3.connect((ROOT / 'data/companion.sqlite3').as_uri() + '?mode=ro', uri=True, timeout=2) as db:
+            db.row_factory = sqlite3.Row
+            return DiaryBook(db, read_settings(), ROOT).page_art(day)
+
+    @result
+    def choose_diary_cover(self, month, selection):
+        with self._lock, sqlite3.connect(ROOT / 'data/companion.sqlite3', isolation_level=None, timeout=5) as db:
+            db.row_factory = sqlite3.Row
+            return DiaryBook(db, read_settings(), ROOT).choose_cover(month, selection)
+
+    @result
+    def diary_cover_art(self, month):
+        with sqlite3.connect((ROOT / 'data/companion.sqlite3').as_uri() + '?mode=ro', uri=True, timeout=2) as db:
+            db.row_factory = sqlite3.Row
+            return DiaryBook(db, read_settings(), ROOT).cover_art(month)
 
     @result
     def open_experience_link(self, project_id, link_id):

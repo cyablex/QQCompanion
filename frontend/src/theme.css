@@ -24,19 +24,19 @@ p { line-height: 1.85; }
 .brand strong { font-size: 22px; font-weight: 700; letter-spacing: 3px; display: block; }
 .brand span { display: block; font-size: 10px; color: var(--muted); margin-top: 4px; letter-spacing: 1px; }
 .nav-label { padding: 0 14px; margin: 55px 0 16px; color: #9398a0; font-size: 11px; letter-spacing: 2px; }
-nav { display: grid; gap: 9px; }
-nav button { display: flex; align-items: center; gap: 14px; width: 100%; padding: 14px 17px; border: none; border-radius: 11px; background: transparent; color: #7b8089; text-align: left; font-weight: 500; }
-nav button:hover { background: #dee2e8; }
-nav button.active { background: #dceaff; color: #3759c8; font-weight: 650; }
+.sidebar nav { display: grid; gap: 9px; }
+.sidebar nav button { display: flex; align-items: center; gap: 14px; width: 100%; padding: 14px 17px; border: none; border-radius: 11px; background: transparent; color: #7b8089; text-align: left; font-weight: 500; }
+.sidebar nav button:hover { background: #dee2e8; }
+.sidebar nav button.active { background: #dceaff; color: #3759c8; font-weight: 650; }
 .nav-dot { margin-left: auto; width: 5px; height: 5px; border-radius: 50%; background: #546582; }
 .sidebar-bottom { margin-top: auto; padding: 25px 15px 0; }
 .sidebar-bottom p { color: #8a8f98; font-size: 12px; margin: 16px 0 24px; line-height: 2; }
 @media (max-height: 820px) {
   .sidebar { padding: 22px 16px 16px; overflow-y: auto; }
-  .brand, nav { flex-shrink: 0; }
+  .brand, .sidebar nav { flex-shrink: 0; }
   .nav-label { margin: 24px 0 12px; }
-  nav { gap: 4px; }
-  nav button { padding: 10px 14px; }
+  .sidebar nav { gap: 4px; }
+  .sidebar nav button { padding: 10px 14px; }
   .sidebar-bottom { padding-top: 18px; }
   .sidebar-bottom p { margin: 10px 0 12px; }
 }

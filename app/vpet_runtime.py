@@ -99,11 +99,15 @@ def set_enabled(enabled, root=ROOT, cfg=None):
     return status(root, cfg)
 
 
-def open_console(page, root=ROOT):
-    if page not in {'home', 'creative', 'calendar', 'songbook'}:
+def open_console(page, root=ROOT, day=''):
+    if page not in {'home', 'creative', 'calendar', 'songbook', 'diary'}:
         raise ValueError('不支持的控制台页面。')
+    if day:
+        from datetime import datetime
+        if page != 'diary' or not isinstance(day, str) or datetime.strptime(day, '%Y-%m-%d').strftime('%Y-%m-%d') != day:
+            raise ValueError('日记日期无效。')
     root = Path(root).resolve()
-    atomic_json(root / 'data/desktop-navigation.json', dict(page=page, created=time.time()))
+    atomic_json(root / 'data/desktop-navigation.json', dict(page=page, day=day, created=time.time()))
     if os.name == 'nt':
         import ctypes
         window = ctypes.windll.user32.FindWindowW(None, '大肥鱼控制台')
