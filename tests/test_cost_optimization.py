@@ -102,11 +102,11 @@ async def test_explicit_memory_correction_does_not_wait_for_full_batch(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_owner_skip_waits_two_to_four_hours_without_repeated_model_calls(tmp_path):
+async def test_owner_skip_waits_45_to_90_minutes_without_repeated_model_calls(tmp_path):
     store = Store(tmp_path / "outreach.sqlite3")
     now = datetime.now(TZ).replace(hour=12)
     cfg = dict(owner_qq="11111", bot_qq="22222", proactive=True, live=True, paused=False,
-               daily_chat_messages=500, proactive_min=3, proactive_max=6)
+               daily_chat_messages=500, proactive_min=3, proactive_max=6, revision=1)
     calls = []
     engine = Engine(store, None, None, lambda: dict(cfg))
     store.incoming("old", "11111", "闲聊", now.timestamp() - 5 * 3600)
@@ -118,7 +118,7 @@ async def test_owner_skip_waits_two_to_four_hours_without_repeated_model_calls(t
     engine.decision = decision
     assert not await engine.proactive(now)
     until = store.get("owner_proactive_next")
-    assert now.timestamp() + 2 * 3600 <= until <= now.timestamp() + 4 * 3600
+    assert now.timestamp() + 45 * 60 <= until <= now.timestamp() + 90 * 60
     assert not await engine.proactive(now)
     assert len(calls) == 1
 

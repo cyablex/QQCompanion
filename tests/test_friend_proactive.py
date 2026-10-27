@@ -101,7 +101,7 @@ async def test_skip_is_durable_no_daily_minimum_and_no_cross_contact_context(env
     engine.generate = generate
     assert not await workflow.run(now)
     assert not sent and "OWNER_PRIVATE" not in str(calls)
-    assert now + 2 * 3600 <= store.get("friend_proactive_next:33333") <= now + 4 * 3600
+    assert now + 90 * 60 <= store.get("friend_proactive_next:33333") <= now + 180 * 60
     assert not await workflow.run(now + 60)
     assert len(calls) == 1
 

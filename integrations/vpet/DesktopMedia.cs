@@ -15,6 +15,8 @@ public sealed class DesktopMedia : IDisposable
     private readonly Queue<JsonElement> queue = new();
     private bool busy, disposed;
     private string? currentFile;
+    private bool song;
+    public string? Activity => currentFile is null ? null : song ? "正在唱歌" : "正在说话";
     private int epoch;
     public bool Quiet { get; set; }
 
@@ -65,6 +67,7 @@ public sealed class DesktopMedia : IDisposable
             if (current != epoch || disposed) return;
             await using (var file = File.Create(path)) { await response.Content.CopyToAsync(file); }
             if (current != epoch || disposed) { File.Delete(path); return; }
+            song = extension == ".mp3";
             currentFile = path; player.Open(new Uri(path));
         }
         catch (Exception)

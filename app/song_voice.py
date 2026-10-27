@@ -1,6 +1,7 @@
 """Resolve the current singing reference without fixing a character or gender."""
 
 import json
+import math
 from pathlib import Path
 
 from settings import ROOT
@@ -19,4 +20,7 @@ def singing_voice(cfg, root=ROOT):
     path = Path(reference).resolve()
     if not path.is_file() or path.suffix.lower() != ".wav":
         raise ValueError("请选择可读取的 WAV 参考音色。")
-    return dict(reference=str(path), pitch_mode=mode, shift=shift, steps=50)
+    guidance = cfg.get('singing_guidance', 0.9)
+    if isinstance(guidance, bool) or not isinstance(guidance, (int, float)) or not math.isfinite(guidance) or not 0 <= guidance <= 1:
+        raise ValueError('歌声参考引导强度必须在0到1之间。')
+    return dict(reference=str(path), pitch_mode=mode, shift=shift, steps=50, guidance=float(guidance))

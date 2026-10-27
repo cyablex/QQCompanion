@@ -128,13 +128,22 @@ class VPetBridge:
         cfg = self.engine.config_reader()
         project = CreativeProjects(self.store.db, cfg, self.root).active()
         active = self.store.db.execute(
-            "SELECT kind FROM turn_tasks WHERE contact=? AND bot=? AND state IN ('queued','running') "
-            "ORDER BY created DESC LIMIT 1", (cfg['owner_qq'], cfg['bot_qq'])).fetchone()
-        activity = '正在做你交代的事' if active else '等你来玩'
+            "SELECT kind FROM turn_tasks WHERE contact=? AND bot=? AND generation=? AND state IN ('queued','running') "
+            "ORDER BY created DESC LIMIT 1", (cfg['owner_qq'], cfg['bot_qq'], self.engine.memory_epoch(cfg['owner_qq']))).fetchone()
+        song = self.store.db.execute(
+            "SELECT s.title,s.state FROM song_requests r JOIN songs s ON s.id=r.song_id "
+            "WHERE r.contact=? AND r.bot=? AND r.generation=? AND r.state='waiting' ORDER BY r.created DESC LIMIT 1",
+            (cfg['owner_qq'], cfg['bot_qq'], self.engine.memory_epoch(cfg['owner_qq']))).fetchone()
+        activity = ('正在画画' if active and active['kind'].startswith('drawing.')
+                    else '正在做你交代的事' if active
+                    else f"正在学唱《{song['title']}》" if song and song['state'] == 'processing'
+                    else f"《{song['title']}》等待准备或发送" if song
+                    else '等你来玩')
         return dict(game_mode=bool(cfg.get('game_mode')), enabled=vpet_runtime.preferences(self.root).get('enabled') is True,
                     ready=self.engine.allowed(cfg, cfg['owner_qq']), activity=activity,
                     generation=self.engine.memory_epoch(cfg['owner_qq']),
                     scope=cfg['bot_qq'] + ':' + cfg['owner_qq'],
+                    character='大肥鱼·蓝发女仆' if (Path(self.root) / 'vpet/characters/dafeiyu-v1/character.json').is_file() else 'VPet演示形象',
                     project=project['title'] if project else '', next_step=project['next_step'] if project else '')
 
     async def interact(self, value):

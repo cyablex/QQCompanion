@@ -42,6 +42,7 @@ def parse_decision(response, cfg, read_through):
         drawing_id=obj.get("drawing_id")
         if isinstance(obj.get("drawing_id"), str) and len(obj["drawing_id"]) <= 128
         else None,
+        song_offer=obj.get('song_offer') if isinstance(obj.get('song_offer'), str) and len(obj['song_offer']) <= 64 else None,
         revision=cfg["revision"],
         read_through=read_through,
     )

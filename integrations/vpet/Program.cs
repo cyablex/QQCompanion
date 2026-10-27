@@ -129,7 +129,9 @@ public sealed class PetWindow : Window, IController
             double ratio = size;
             AddMenu(menu, $"大小 {(int)(ratio * 500)}", () => { zoom = ratio; stage.Width = stage.Height = 500 * zoom; Width = Math.Max(280, stage.Width + 30); Height = stage.Height + 42; KeepOnScreen(); SavePreferences(); });
         }
-        AddMenu(menu, "关于演示素材", () => ShowBubble("当前动作素材来自 VPet 原作者，角色外观尚未替换。大肥鱼的人设与记忆由原后台提供。"));
+        AddMenu(menu, "关于当前形象", () => ShowBubble(File.Exists(Path.Combine(root, "vpet", "characters", "dafeiyu-v1", "character.json"))
+            ? "蓝发女仆基础动作，复用本机 QQ 表情；和 QQ 共用同一套人设与记忆。移动暂用开心轻跳，完整行走和口型待补充。"
+            : "当前为 VPet 原作者演示素材；本机有女仆表情包时，可运行角色准备工具接入。"));
         AddMenu(menu, "退出桌宠", Quit);
         PreviewMouseRightButtonDown += (_, e) => { menu.PlacementTarget = this; menu.IsOpen = true; e.Handled = true; };
         poll.Tick += async (_, _) => await Refresh();
@@ -142,8 +144,10 @@ public sealed class PetWindow : Window, IController
             {
                 loading = true;
                 GraphCore.CachePath = Path.Combine(root, "cache", "vpet");
-                var assets = Path.Combine(root, "vpet", "assets");
-                var loader = new PetLoader(new LpsDocument(File.ReadAllText(Path.Combine(assets, "vup.lps"))), new DirectoryInfo(assets));
+                var custom = Path.Combine(root, "vpet", "characters", "dafeiyu-v1");
+                var assets = File.Exists(Path.Combine(custom, "character.json")) ? custom : Path.Combine(root, "vpet", "assets");
+                var model = assets == custom ? "pet.lps" : "vup.lps";
+                var loader = new PetLoader(new LpsDocument(File.ReadAllText(Path.Combine(assets, model))), new DirectoryInfo(assets));
                 var core = new GameCore { Controller = this, Save = new GameSave("大肥鱼"), Graph = loader.Graph(500, Dispatcher) };
                 core.Graph.GraphConfig.Moves.RemoveAll(move => move.Graph != "walk.left" && move.Graph != "walk.right");
                 pet = new Main(core) { NoFunctionMOD = IGameSave.ModeType.Nomal };
@@ -208,7 +212,7 @@ public sealed class PetWindow : Window, IController
             if (generation.HasValue && (generation != current || scope != currentScope)) { media.Reset(); Chat.ResetMemory(); seen.Clear(); bubblePopup.IsOpen = false; }
             generation = current;
             scope = currentScope;
-            status.Text = data.GetProperty("ready").GetBoolean() ? data.GetProperty("activity").GetString() : "大肥鱼正在休息";
+            status.Text = data.GetProperty("ready").GetBoolean() ? media.Activity ?? data.GetProperty("activity").GetString() : "大肥鱼正在休息";
             status.ToolTip = data.GetProperty("project").GetString() + "\n" + data.GetProperty("next_step").GetString();
             var messages = (await Request("/messages")).GetProperty("messages");
             var acknowledgements = new List<string>();

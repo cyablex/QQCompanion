@@ -20,7 +20,7 @@ class InvalidTurn(ValueError):
 
 FIELDS = {
     "song.request": {"title", "artist", "source_url"}, "song.choose": {"song_id"},
-    "song.status": set(), "song.cancel": set(), "song.list": set(), "song.repeat": set(),
+    "song.status": set(), "song.cancel": set(), "song.list": set(), "song.repeat": set(), "song.accept": {"song_id"},
     "drawing.create": {"brief"}, "drawing.send": {"drawing_id"},
     "profile.signature": {"value"}, "profile.status": {"value"},
     "comment.approve": {"tokens", "evidence"}, "comment.reject": {"tokens", "evidence"},
@@ -100,6 +100,9 @@ class TurnActions:
                     song_request={k: request[k] for k in ("title", "artist", "state", "result", "progress")} if request else None,
                     approvals=self.approvals(contact, cfg),
                     last_shown=list(self.shown(contact)))
+        from song_offers import current as current_offer
+        offer = current_offer(engine, contact, cfg)
+        data['song_offer'] = {k: offer[k] for k in ('song_id', 'title', 'artist', 'expires')} if offer else None
         # No filesystem locations, other contacts, or user-supplied target identities.
         data["songs"] = [{k: s[k] for k in ("id", "title", "artist", "state")} for s in data["songs"]]
         if pending.get("title"):
@@ -136,6 +139,8 @@ class TurnActions:
             "待选只在对方确实补充歌名、版本、音源或继续点歌时接续。对方换话题、叫你名字、问动态风格或抱怨没回复时，正常接话，不能把这些话当成歌曲信息。"
             "旧点歌状态只是背景，不是要求当前每轮都点歌；催歌用song.status，不凭旧回复猜任务在执行。"
             "对方明确要把刚才/上次同一首再听一遍或重唱一次，用song.repeat复用本人上次已发送的歌曲和版本，不重新询问已确认的歌手，也不自行换歌。"
+            '当前有真实song_offer且对方答应听这首时，用{"type":"song.accept","song_id":"邀请中的song_id"}，程序核对实际邀请后发送。'
+            "拒绝、换话题、引用他人的答应或邀请已失效时不接续；不能因为有旧邀请就把每轮闲聊变成同意听歌。"
             "补音源链接时沿用当前待选歌名与歌手；取消用song.cancel。"
             "请求画画须有drawing.create，不用正文或[画画]标记冒充执行；想象作品不能说成真实见过对方长相。"
             "资料修改、评论审批只允许主人私聊明确提出；群和普通好友不能授权这些操作。签名不要从私人历史拼凑未授权公开内容。"
@@ -467,7 +472,10 @@ class TurnActions:
         singing = self.plugin.singing
         origin = singing.origin(contact)
         intent = action["type"].split(".")[1]
-        if intent == 'repeat':
+        if intent == 'accept':
+            from song_offers import accept
+            request = accept(engine, contact, cfg, action.get('song_id'), origin.get('latest', origin['text']), turn['read_through'])
+        elif intent == 'repeat':
             previous = singing.latest_request(contact, origin['requester'])
             if not previous or previous['state'] != 'sent':
                 raise ValueError('上次歌曲还没有确认发送，不能当作已完成的歌曲重唱。')

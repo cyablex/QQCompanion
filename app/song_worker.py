@@ -165,6 +165,7 @@ class SongWorker:
             self.command([sys.executable, "-X", "utf8", "-u", str(ROOT / "integrations/seedvc/companion_svc.py"), "--source", str(self.work / "vocals.wav"),
                           "--target", voice["reference"], "--pitch-mode", voice["pitch_mode"], "--shift", str(voice["shift"]),
                           "--steps", str(voice['steps']),
+                          "--cfg-rate", str(voice['guidance']),
                           "--output", str(self.work / "converted")])
             converted = list((self.work / "converted").glob("*.wav"))
             if len(converted) != 1:

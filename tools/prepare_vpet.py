@@ -74,6 +74,8 @@ def prepare(root=ROOT, sdk=None):
         'Source and animation terms: https://github.com/LorisYounger/VPet#动画版权声明与授权\n'
         f'Pinned commit: {UPSTREAM}\nAssets are not redistributed with QQCompanion source.\n', encoding='utf-8')
     env = {**os.environ, 'DOTNET_CLI_TELEMETRY_OPTOUT': '1', 'DOTNET_NOLOGO': '1'}
+    from prepare_pet_character import prepare as prepare_character
+    prepare_character(root)
     subprocess.run([str(sdk), 'publish', str(root / 'integrations/vpet/DafeiyuPet.csproj'), '-c', 'Release',
                     '-r', 'win-x64', '--self-contained', 'false', '-o', str(root / 'vpet/host')], env=env, check=True)
     print(json.dumps(dict(prepared=True, assets=len(selected), enabled=False)))

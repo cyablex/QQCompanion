@@ -3,7 +3,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Media.Imaging;
 using Button = System.Windows.Controls.Button;
 using TextBox = System.Windows.Controls.TextBox;
 using Brushes = System.Windows.Media.Brushes;
@@ -89,11 +88,9 @@ public sealed class ChatWindow : Window
 
     public void ShowImage(byte[] bytes)
     {
-        var bitmap = new BitmapImage();
-        using var stream = new System.IO.MemoryStream(bytes);
-        bitmap.BeginInit(); bitmap.CacheOption = BitmapCacheOption.OnLoad; bitmap.StreamSource = stream; bitmap.EndInit(); bitmap.Freeze();
-        var image = new System.Windows.Controls.Image { Source = bitmap, Stretch = Stretch.Uniform, MaxHeight = 400 };
-        new Window { Title = "大肥鱼发来的图片", Content = image, Width = 420, Height = 440, Owner = this, Background = Brushes.White }.Show();
+        var picture = new AnimatedPicture(bytes);
+        var window = new Window { Title = "大肥鱼发来的图片", Content = picture.View, Width = 420, Height = 440, Owner = this, Background = Brushes.White };
+        window.Closed += (_, _) => picture.Dispose(); window.Show();
     }
 
     public void ResetMemory()

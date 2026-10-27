@@ -481,7 +481,11 @@ class Engine:
                             result['turn_finalized'] = True
                         return finish(result)
                     try:
-                        return finish(self.parse_decision(response, cfg, read_through))
+                        decoded = self.parse_decision(response, cfg, read_through)
+                        if kind in {'proactive', 'friend_proactive'} and not decoded.get('song_offer') and re.search(
+                                r'给你唱(?:一首|首)|(?:想不想|要不要)听我唱', '\n'.join(decoded['messages'])):
+                            raise ValueError('唱歌邀请需要可接续的song_offer曲目编号。')
+                        return finish(decoded)
                     except (ValueError, TypeError) as exc:
                         if structured_retries == 0:
                             structured_retries += 1
@@ -490,6 +494,7 @@ class Engine:
                             continue
                         log.warning("background_format_recovery kind=%s reason=%s", kind, type(exc).__name__)
                         return finish(dict(action="skip", messages=[], memory=[],
+                                           decision_error=type(exc).__name__,
                                            revision=cfg["revision"], read_through=read_through))
                 except BaseException as exc:
                     self.store.settle(rid, state="failed_or_unknown")
@@ -861,12 +866,20 @@ class Engine:
     async def prepare_proactive_drawing(self, contact, result, cfg):
         if not result or not result.get("drawing_brief"):
             return result
+        def text_fallback():
+            # Keep actual ordinary speech; statements describing an attached
+            # picture cannot survive when there is no picture to attach.
+            from reply_content import independent_chat
+            text = independent_chat(dict(messages=result['messages'], turn_actions=[dict(type='drawing.create')]))
+            text = [line for line in text if not re.search(r'画[了好]|这[张幅](?:图|画)|附[图上]|给你看|看看这|图里|画里', line)
+                    and not re.fullmatch(r'(?:一[张幅])?(?:小画|小图|画作|图片)[。！!？?]*', line)]
+            return dict(result, messages=text, drawing_brief=None) if text else None
         if not cfg.get("autonomous_drawing"):
-            return None
+            return text_fallback()
         day = datetime.now(TZ).strftime("%Y-%m-%d")
         key = f"spontaneous_drawing_attempt:{cfg['bot_qq']}:{contact}:{day}"
         if self.store.get(key):
-            return None
+            return text_fallback()
         self.store.set(key, {"at": time.time()})
         try:
             drawing = await self.sketchbook.create(self, cfg, result["drawing_brief"], contact)
@@ -874,9 +887,9 @@ class Engine:
             raise
         except Exception as exc:
             self.store.set("last_drawing_error", type(exc).__name__)
-            return None
+            return text_fallback()
         if not drawing:
-            return None
+            return text_fallback()
         return dict(result, drawing_file=drawing["file"], drawing_id=drawing["id"])
 
     async def proactive(self, now=None):
@@ -920,23 +933,21 @@ class Engine:
             "daily_chat_messages", 500
         ):
             return False
-        self.store.set("owner_proactive_next", now.timestamp() + random.randint(120, 240) * 60)
-        self.store.set("owner_proactive_assessment", dict(at=now.timestamp(), incoming=last_in))
-        result = await self.decision(
+        from outreach import assess
+        return await assess(self,
             owner,
+            cfg,
             "proactive",
-            "你有机会主动联系主人，没有每天必须发满的指标，可以连续多天skip。"
-            "有与你们相处有关的具体小趣味、自然心情或特别想给他看的画面才联系；不为了开启聊天硬找话题。"
+            "你有机会自然地找主人聊两句，不需要等到有重大成果，也没有每天发满的指标。"
+            "可以接着你们聊过的事、分享一件真实的小感受、惦记一个尚未完成的共同作品，或邀请他听歌；"
+            "内容要能说明为什么想找他聊，避免可群发的问候、机械关心、重复同一话题和连续追问。"
+            "有自然可接的话就reply，没有依据、他明确在忙或刚刚拒绝话题时就skip，不硬凑。"
             "阅读和研究是自己的兴趣，不把每一点鲸鱼知识、研究计划和零碎进展都播报给他，"
             "只有他明确想听且发现本身值得讲时才分享。日常可以只是随兴画画、放空，"
             "画完也不必马上找人或发动态；画里晒太阳的自己、两个开心伙伴都可以，不需要科普目的。"
-            "没有特别想说的就skip，不催回复、不假装对方已经回应，不编造共同经历或线下活动。",
+            "不催回复、不假装对方已经回应，不编造共同经历或线下活动。",
+            now.timestamp(),
         )
-        result = await self.prepare_proactive_drawing(owner, result, cfg)
-        sent = await self.deliver(owner, "proactive", result)
-        if sent:
-            self.store.set("owner_proactive_next", now.timestamp() + 90 * 60)
-        return sent
 
     def personal_command(self, contact, text):
         """Transport-authenticated self-service only; never accepts a target QQ ID."""

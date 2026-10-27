@@ -114,6 +114,13 @@ class ChatPromptBuilder:
                 "没有依据就聊此刻的心情、想做的事或正在和对方说话，不补编刚才忙了什么。"
                 "旧assistant说过但没有活动记录支持的自述，也不能继续当作证据。"
             )
+        if outreach:
+            from song_offers import context as song_offer_context
+            system += song_offer_context(self.singing, cfg)
+            system += ('\n【本轮输出协议】这是主动联系评估，不是执行用户命令。只输出一个JSON对象：'
+                       '{"action":"reply","messages":["自然简短的正文"],"memory":[]}，'
+                       '没有合适内容时用{"action":"skip","messages":[],"memory":[]}。'
+                       '可选drawing_brief或song_offer；不要tasks、chat_messages、代码围栏或额外说明。')
         return ChatPrompt(
             system, contexts, activity_query, plain_reply, outreach, wave_blocked
         )

@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import os
 import sys
 import urllib.request
@@ -17,9 +18,12 @@ def main():
     parser.add_argument("--target", type=Path, default=ROOT.parent / "GPTSoVITS/reference/yui/everyday.wav")
     parser.add_argument("--output", type=Path, default=ROOT / "outputs")
     parser.add_argument("--steps", type=int, choices=range(10, 61), default=50)
+    parser.add_argument('--cfg-rate', type=float, default=0.9, help='Seed-VC参考引导强度，0到1')
     parser.add_argument("--shift", type=int, choices=range(-12, 13), default=0)
     parser.add_argument("--pitch-mode", choices=("reference_octave", "preserve"), default="reference_octave")
     args = parser.parse_args()
+    if not math.isfinite(args.cfg_rate) or not 0 <= args.cfg_rate <= 1:
+        parser.error('参考引导强度必须在0到1之间')
     if not args.source.is_file() or not args.target.is_file():
         parser.error("需要实际存在的歌声干声与参考音色文件")
     config = Path(os.environ.get("QQCOMPANION_ROOT", ROOT.parent / "QQCompanion")) / "config/user.json"
@@ -69,7 +73,7 @@ def main():
 
     inference.main(SimpleNamespace(source=str(args.source.resolve()), target=str(args.target.resolve()),
                             output=str(args.output.resolve()), diffusion_steps=args.steps,
-                            length_adjust=1.0, inference_cfg_rate=0.7, f0_condition=True,
+                            length_adjust=1.0, inference_cfg_rate=args.cfg_rate, f0_condition=True,
                             auto_f0_adjust=False, semi_tone_shift=args.shift,
                             checkpoint=None, config=None, fp16=True))
 

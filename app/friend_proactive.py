@@ -90,16 +90,12 @@ class FriendProactive:
             self.store.get("friend_proactive_assessment:" + c, {}).get("at", 0),
             self.store.last_action(c, "friend_proactive"),
             volumes.get(c, 0)))
-        # Persist an irregular next assessment, including when the model skips.
-        self.store.set(
-            "friend_proactive_next:" + contact, now + random.randint(120, 240) * 60
-        )
-        self.store.set("friend_proactive_assessment:" + contact,
-                       dict(at=now, incoming=self.store.last_incoming(contact)))
-        result = await self.plugin.engine.decision(
+        from outreach import assess
+        return await assess(self.plugin.engine,
             contact,
+            cfg,
             "friend_proactive",
-            "这只是一次可选的主动联系机会，没有每天必须找几个人的任务，可以连续多天skip。"
+            "这是一次可选的主动联系机会，没有每天必须找几个人的任务；不必等重大成果，有自然的共同话题就可聊两句。"
             "先问自己这位好友真的会想收到吗：有与你们实际相处有关的具体小趣味、自然的心情，"
             "或特别适合这位好友的画面时才reply。脱离你们的对话也能群发的话、没事找事的问候和硬接问题就skip。"
             "阅读主要是自己的兴趣，不主动广播每个知识点和一点点进展；只有对方明确表现过相关兴趣，"
@@ -113,27 +109,5 @@ class FriendProactive:
             "别根据几天前忙就猜今天不忙，不催回复、不追问为什么没理你。"
             "不编造对方的近况、约定、共同经历或未完成的活动；不提任何其他人的私聊。"
             "对方曾要求不主动打扰或拒绝此话题时必须 skip。有话才 reply 一条简短消息。",
+            now,
         )
-        if not result or result.get("action") != "reply" or not result.get("messages"):
-            return False
-        result = dict(result, messages=[" ".join(result["messages"])[:300]])
-        fresh = read_settings()
-        if not fresh.get("proactive") or fresh["revision"] != cfg["revision"]:
-            return False
-        result = await self.plugin.engine.prepare_proactive_drawing(contact, result, cfg)
-        if not result:
-            return False
-        slot = (
-            self.store.action_count(
-                "friend_proactive", day_start(datetime.fromtimestamp(now, TZ)), contact
-            )
-            + 1
-        )
-        key = f"friend_proactive:{cfg['bot_qq']}:{contact}:{datetime.fromtimestamp(now, TZ).strftime('%Y-%m-%d')}:{slot}"
-        sent = await self.plugin.engine.deliver(
-            contact, "friend_proactive", result, key=key
-        )
-        if sent:
-            self.store.set("friend_proactive_next:" + contact,
-                           now + cfg.get("friend_proactive_interval_hours", 1.5) * 3600)
-        return sent
