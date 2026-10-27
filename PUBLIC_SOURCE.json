@@ -182,6 +182,7 @@
     "tests/test_daily_space_and_quota.py",
     "tests/test_delivery_recovery.py",
     "tests/test_desktop_api.py",
+    "tests/test_desktop_startup.py",
     "tests/test_diary_book.py",
     "tests/test_digital_activity.py",
     "tests/test_engine.py",

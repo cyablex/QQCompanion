@@ -9,8 +9,7 @@ from datetime import datetime
 
 from creative_projects import CreativeProjects
 from art_gallery import ArtGallery
-from experience_calendar import ExperienceCalendar
-from store import TZ
+from experience_calendar import ExperienceCalendar, TZ
 
 THEMES = ('cover', 'quiet', 'song', 'reading', 'rice', 'night', 'memory')
 
