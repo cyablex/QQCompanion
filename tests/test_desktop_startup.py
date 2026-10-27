@@ -7,6 +7,8 @@ from pathlib import Path
 
 def test_desktop_import_does_not_load_bot_store_or_timezone_database():
     app = Path(__file__).resolve().parents[1] / 'app'
+    desktop = app.parent.parent / 'QQCompanionFrontendTools/python-env/Scripts/python.exe'
+    interpreter = str(desktop) if desktop.is_file() else sys.executable
     script = '''
 import importlib.abc
 import sys
@@ -21,4 +23,4 @@ sys.path.insert(0, sys.argv[1])
 from desktop_api import DesktopAPI
 assert callable(DesktopAPI.get_diary_book)
 '''
-    subprocess.run([sys.executable, '-I', '-c', script, str(app)], check=True, capture_output=True, text=True)
+    subprocess.run([interpreter, '-I', '-c', script, str(app)], check=True, capture_output=True, text=True)
