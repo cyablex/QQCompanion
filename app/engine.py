@@ -32,12 +32,17 @@ from local_voice import allowed_file as voice_allowed_file
 from turn_actions import InvalidTurn
 from chat_context import ChatPromptBuilder
 from reply_parser import EmptyReplyError, parse_chat_reply, parse_decision as parse_structured_reply
+from task_state import version as task_version
 
 log = logging.getLogger("qqcompanion")
 
 
 class DeliveryUnavailable(Exception):
     """The transport failed its preflight; no send was attempted."""
+
+
+class TaskStateChanged(DeliveryUnavailable):
+    """The task facts used by a chat draft changed before its first send."""
 
 
 def quiet(now):
@@ -231,6 +236,7 @@ class Engine:
             public=public, now=datetime.now(TZ),
         )
         system, contexts = prompt.system, prompt.contexts
+        task_epoch = task_version(self.store, contact) if not public and kind == 'reply' else None
         if not public:
             from message_channels import route
             if route(self.store, cfg, contact, read_through=read_through) == 'vpet':
@@ -243,6 +249,8 @@ class Engine:
         slot_seconds = generation_seconds = 0.0
 
         def finish(result):
+            if task_epoch is not None:
+                result['task_epoch'] = task_epoch
             if not public:
                 result["memory_generation"] = memory_generation
             if outreach and result.get("share_drawing") and not result.get("drawing_brief") and cfg.get("autonomous_drawing"):
@@ -253,19 +261,22 @@ class Engine:
                         break
                 if not result.get("drawing_file"):
                     result.update(action="skip", messages=[])
+            from reply_content import append_references, independent_chat
+            mixed = bool(result.get('turn_actions'))
+            field = 'chat_messages' if mixed else 'messages'
+            if mixed:
+                result[field] = independent_chat(result)
+                result['messages'] = ['']
+            elif result.get('chat_messages'):
+                result[field] = independent_chat(result)
+                result['chat_messages'] = []
             if wave_blocked:
-                result["messages"] = [
-                    without_decorative_waves(line) or ("" if result.get("sticker_id") else "嗯")
-                    for line in result["messages"]
+                result[field] = [
+                    without_decorative_waves(line) or ("" if mixed or result.get("sticker_id") else "嗯")
+                    for line in result[field]
                 ]
             if web_sources and result.get("action") == "reply":
-                text = "\n\n".join(result["messages"])
-                ordered_sources = sorted(web_sources, key=lambda row: row.get("kind") == "page_excerpt", reverse=True)
-                links = [row["url"] for row in ordered_sources if len(row["url"]) <= 350][:2]
-                missing = links[:1] if not any(url in text for url in links) else []
-                if missing:
-                    refs = "\n\n参考：\n" + "\n".join(missing)
-                    result["messages"] = [text[:1200 - len(refs)] + refs]
+                result[field] = append_references(result[field], web_sources)
             log.info(
                 "decision_timing kind=%s context_ms=%.1f slot_wait_ms=%.1f generation_ms=%.1f total_ms=%.1f",
                 kind, context_seconds * 1000, slot_seconds * 1000,
@@ -539,10 +550,18 @@ class Engine:
                 "read_through", self.store.last_incoming(contact)
             ):
                 return False
+            if result.get('task_epoch') is not None and task_version(self.store, contact) != result['task_epoch']:
+                raise TaskStateChanged('Task facts changed before chat delivery')
             if not self.store.action(key, contact, kind, result["messages"]):
                 return False
             for i, line in enumerate(result["messages"]):
                 current = self.config_reader()
+                if result.get('task_epoch') is not None and task_version(self.store, contact) != result['task_epoch']:
+                    self.store.outcome(key, 'succeeded' if i else 'failed_not_sent',
+                                       f'task facts changed after {i} bubbles')
+                    if i:
+                        return True
+                    raise TaskStateChanged('Task facts changed before first chat bubble')
                 if kind in CHAT_KINDS:
                     limit = (
                         contact_limit(current, contact) if kind != "proactive" else None
@@ -718,38 +737,53 @@ class Engine:
                 resumed = await self.turn_actions.resume(contact, self)
                 if resumed is not None:
                     return resumed
-            result = await self.decision(
-                contact,
-                "reply",
-                "回复当前联系人最近发来的消息。必要时可以多解释一点，但不要重复回复已回答的话。",
-            )
-            if self.turn_actions:
-                handled = await self.turn_actions.execute(contact, self, result)
-                if handled is not None:
-                    return handled
-            if cfg.get("chat_style_review", False) and result and not result.get('turn_finalized'):
-                result = await self.polish_reply(contact, result)
-            if result and result.get("drawing_brief") and cfg.get("autonomous_drawing") and contact.isdigit():
+            through = self.store.last_incoming(contact)
+            for attempt in range(2):
                 try:
-                    drawing = await self.sketchbook.create(self, cfg, result["drawing_brief"], contact)
-                    if drawing:
-                        result["drawing_file"] = drawing["file"]
-                    else:
-                        result["messages"] = ["这次还没画出来，先欠着这张。"]
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    self.store.set("last_drawing_error", type(exc).__name__)
-                    result["messages"] = ["这次画图没完成，先欠着这张。"]
-            if self.voice:
-                result = await self.voice.prepare(contact, result)
-            sent = await self.deliver(contact, "reply", result, key=reply_key)
-            if sent:
-                if result.get("mood") and cfg.get("autonomous_profile"):
-                    self.store.set(f"self_mood:{cfg['bot_qq']}", {"mood": result["mood"], "at": time.time()})
-                self.store.set("last_error", "")
-                self.store.set(f"offline_context:{contact}", None)
-            return sent
+                    return await self._reply_current(contact, cfg, reply_key)
+                except TaskStateChanged:
+                    if self.store.last_incoming(contact) != through:
+                        return False
+                    if attempt:
+                        raise
+                    # Refresh history and task facts once, without executing the
+                    # stale plan or sending a contradictory old waiting message.
+
+    async def _reply_current(self, contact, cfg, reply_key):
+        result = await self.decision(
+            contact,
+            "reply",
+            "回复当前联系人最近发来的消息。必要时可以多解释一点，但不要重复回复已回答的话。",
+        )
+        if result and result.get('task_epoch') is not None and task_version(self.store, contact) != result['task_epoch']:
+            raise TaskStateChanged('Task facts changed during reply generation')
+        if self.turn_actions:
+            handled = await self.turn_actions.execute(contact, self, result)
+            if handled is not None:
+                return handled
+        if cfg.get("chat_style_review", False) and result and not result.get('turn_finalized'):
+            result = await self.polish_reply(contact, result)
+        if result and result.get("drawing_brief") and cfg.get("autonomous_drawing") and contact.isdigit():
+            try:
+                drawing = await self.sketchbook.create(self, cfg, result["drawing_brief"], contact)
+                if drawing:
+                    result["drawing_file"] = drawing["file"]
+                else:
+                    result["messages"] = ["这次还没画出来，先欠着这张。"]
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.store.set("last_drawing_error", type(exc).__name__)
+                result["messages"] = ["这次画图没完成，先欠着这张。"]
+        if self.voice:
+            result = await self.voice.prepare(contact, result)
+        sent = await self.deliver(contact, "reply", result, key=reply_key)
+        if sent:
+            if result.get("mood") and cfg.get("autonomous_profile"):
+                self.store.set(f"self_mood:{cfg['bot_qq']}", {"mood": result["mood"], "at": time.time()})
+            self.store.set("last_error", "")
+            self.store.set(f"offline_context:{contact}", None)
+        return sent
 
     async def polish_reply(self, contact, result):
         """Review preference-sharing or repeated interview questions, without another QQ send."""

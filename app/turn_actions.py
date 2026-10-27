@@ -9,6 +9,9 @@ from self_profile import STATUSES
 from comment_approvals import shown_drafts
 from song_library import normalized
 from creative_projects import CreativeProjects
+from reply_content import independent_chat
+from reply_parser import parse_chat_reply
+from task_state import version as task_version
 
 
 class InvalidTurn(ValueError):
@@ -162,8 +165,7 @@ class TurnActions:
         tasks, messages = obj.get("tasks"), obj.get("messages")
         chat = obj.get('chat_messages', [])
         if (not isinstance(chat, list) or len(chat) > 2 or any(not isinstance(m, str) for m in chat)
-                or sum(map(len, chat)) > 1200 or CLAIM.search('\n'.join(chat))
-                or re.search(r'我(?:已经)?(?:发|唱|画|改)(?:好|完)(?:了|啦)', '\n'.join(chat))
+                or sum(map(len, chat)) > 1200
                 or any(re.search(r'\[画画[:：]', m) for m in chat)):
             raise InvalidTurn('独立聊天部分必须是正常正文，不能代替动作回执或承诺执行。')
         if (not isinstance(tasks, list) or len(tasks) > 8 or not isinstance(messages, list)
@@ -176,10 +178,18 @@ class TurnActions:
                 raise InvalidTurn("存在未授权的动作类型或目标字段。")
             if len(json.dumps(task, ensure_ascii=False)) > 4000:
                 raise InvalidTurn("动作参数过长。")
-        if not allow_unplanned and not tasks and CLAIM.search("\n".join(messages)):
-            raise InvalidTurn("执行承诺没有相应动作。")
         if any(re.search(r"\[画画[:：]", m) for m in messages):
             raise InvalidTurn("绘图必须放在tasks的drawing.create，不能使用旧画画标记。")
+        try:
+            ordinary = independent_chat(dict(messages=messages, chat_messages=chat, turn_actions=tasks))
+        except ValueError as exc:
+            raise InvalidTurn(str(exc)) from exc
+        if tasks:
+            messages, chat = [''], ordinary
+        else:
+            messages, chat = ordinary, []
+        if not allow_unplanned and not tasks and CLAIM.search("\n".join(messages)):
+            raise InvalidTurn("执行承诺没有相应动作。")
         if obj["action"] == "reply" and not tasks and not any(m.strip() for m in messages):
             if chat:
                 messages, chat = chat, []
@@ -270,9 +280,15 @@ class TurnActions:
                 if row["state"] in {"queued", "prepared"}:
                     self.update(row["id"], "cancelled", message="设置已改变，未执行的操作已取消。")
             return True
-        chat = self.store.get(self.chat_key(cfg, contact, origin['event_id']), {}).get('messages', [])
-        return await self.execute(contact, engine, dict(turn_actions=[json.loads(r["args"]) for r in rows],
-            chat_messages=chat, revision=cfg["revision"], read_through=self.store.last_incoming(contact), memory_generation=engine.memory_epoch(contact)))
+        cached = self.store.get(self.chat_key(cfg, contact, origin['event_id']), {})
+        handled = await self.execute(contact, engine, dict(turn_actions=[json.loads(r["args"]) for r in rows],
+            chat_messages=[] if cached.get('needs_refresh') else cached.get('messages', []),
+            voice_selected=cached.get('voice_selected', False), _resuming=True,
+            revision=cfg["revision"], read_through=self.store.last_incoming(contact), memory_generation=engine.memory_epoch(contact)))
+        # A task may finish while ordinary speech is being prepared. Restore
+        # its durable work, then regenerate speech instead of replaying a stale
+        # cached answer, including after a later model/transport failure.
+        return None if handled and cached.get('needs_refresh') else handled
 
     @staticmethod
     def chat_key(cfg, contact, event):
@@ -293,10 +309,34 @@ class TurnActions:
                 or engine.memory_epoch(contact) != turn.get("memory_generation")):
             return False
         tasks = []
-        chat = turn.get('chat_messages', [])
+        chat = independent_chat(turn)
         chat_key = self.chat_key(cfg, contact, origin['event_id'])
-        if chat:
-            self.store.set(chat_key, dict(messages=chat))
+        receipt = self.store.db.execute('SELECT state FROM actions WHERE id=?', (chat_key + ':delivery',)).fetchone()
+        chat_result = None
+        if chat and (not receipt or receipt['state'] == 'failed_not_sent'):
+            captured = turn.get('task_epoch', task_version(self.store, contact))
+            chat_result = parse_chat_reply('\n\n'.join(chat), cfg, turn['read_through'], contact=contact,
+                stickers=engine.stickers, turn_plan=turn,
+                recent_sticker=lambda: self.store.get('last_sticker:' + contact, {}))
+            # This bounded speech was already assembled by the turn decoder.
+            # Keep its answer and verified references together after extracting
+            # control markers rather than splitting references into a new send.
+            chat_result['messages'] = ['\n\n'.join(chat_result['messages'])]
+            chat_result.update(memory_generation=turn.get('memory_generation'),
+                               delivery_event=origin['event_id'], drawing_brief=None, task_epoch=captured)
+            if engine.voice:
+                chat_result = await engine.voice.prepare(contact, chat_result)
+            fresh = engine.config_reader()
+            if (fresh['revision'] != cfg['revision'] or not engine.allowed(fresh, contact)
+                    or self.store.last_incoming(contact) != turn['read_through']
+                    or engine.memory_epoch(contact) != turn.get('memory_generation')):
+                return False
+            if task_version(self.store, contact) != captured:
+                from engine import TaskStateChanged
+                raise TaskStateChanged('Task facts changed while preparing independent chat')
+            self.store.set(chat_key, dict(messages=chat, voice_selected=turn.get('voice_selected', False)))
+        elif not chat and not turn.get('_resuming'):
+            self.store.set(chat_key, dict(messages=[]))
         for index, action in enumerate(turn["turn_actions"]):
             ident = f"turn:{cfg['bot_qq']}:{origin['event_id']}:{index}"
             self.store.db.execute(
@@ -306,6 +346,29 @@ class TurnActions:
                  origin["event_id"], origin["source_time"], cfg["owner_qq"], cfg["bot_qq"], engine.memory_epoch(contact), cfg["revision"], time.time(), time.time(), "{}"))
             tasks.append(dict(self.store.db.execute("SELECT * FROM turn_tasks WHERE id=?", (ident,)).fetchone()))
         # Every action is durable before any execution/acknowledgement starts.
+        # Independent chat has its own receipt and must not wait for a slow
+        # picture or depend on the attachment transport succeeding.
+        retry_error = None
+        if chat_result:
+            # Registering this plan changes the epoch itself. No await occurs
+            # between that write and this snapshot; later changes are external.
+            chat_result['task_epoch'] = task_version(self.store, contact)
+            try:
+                sent_chat = await engine.deliver(contact, 'reply', chat_result, key=chat_key + ':delivery')
+                if sent_chat:
+                    if chat_result.get('mood') and cfg.get('autonomous_profile'):
+                        self.store.set(f"self_mood:{cfg['bot_qq']}", dict(mood=chat_result['mood'], at=time.time()))
+                    self.store.set('last_error', '')
+                    self.store.set('offline_context:' + contact, None)
+            except Exception as exc:
+                from engine import DeliveryUnavailable, TaskStateChanged
+                if not isinstance(exc, DeliveryUnavailable):
+                    raise
+                if isinstance(exc, TaskStateChanged):
+                    self.store.set(chat_key, dict(messages=[], needs_refresh=True))
+                # A known-unsent text must not prevent an authorized task.
+                # Retry its stable receipt after the business operation finishes.
+                retry_error = exc
         handled = True
         for task in tasks:
             fresh = engine.config_reader()
@@ -334,6 +397,12 @@ class TurnActions:
                     # Retain the finished picture for a definitely-unsent retry;
                     # an uncertain image send must never become a text success.
                     handled = current == "unknown" and handled
+                    if current == 'prepared':
+                        from engine import DeliveryUnavailable
+                        if isinstance(exc, DeliveryUnavailable):
+                            # Restore the prepared media through the queue before
+                            # a state refresh can finish this turn as text-only.
+                            retry_error = exc
                     continue
                 if current in {"queued", "running"}:
                     state = "unknown" if current == "running" and task["kind"].startswith("profile.") else "failed"
@@ -346,10 +415,8 @@ class TurnActions:
                     handled = bool(await self.acknowledge(engine, contact, turn, task, note)) and handled
                 else:
                     handled = True  # Unknown delivery must not be replayed.
-        if handled and chat:
-            await engine.deliver(contact, 'reply', dict(action='reply', messages=chat, revision=turn['revision'],
-                read_through=turn['read_through'], memory_generation=turn.get('memory_generation'),
-                delivery_event=origin['event_id']), key=chat_key + ':delivery')
+        if retry_error:
+            raise retry_error
         return handled
 
     async def perform(self, contact, engine, turn, task, action, origin, cfg):
@@ -453,6 +520,8 @@ class TurnActions:
             self.update(task["id"], "running", message="已登记，正在构图绘制，尚未发送图片。")
             row = await engine.sketchbook.create(engine, cfg, brief, contact)
         if not row or not engine.sketchbook.allowed_file(cfg, row["file"], contact):
+            if task['state'] == 'prepared' or action['type'] == 'drawing.send':
+                self.update(task['id'], 'failed', message='画作文件已不可用，图片尚未发送。')
             raise ValueError("Drawing not created or not in scope")
         self.update(task["id"], "prepared", message="图片已画好，尚未确认发送。", drawing_id=row["id"])
         sent = await self.acknowledge(engine, contact, turn, task, row["caption"], drawing_file=row["file"], drawing_id=row["id"])

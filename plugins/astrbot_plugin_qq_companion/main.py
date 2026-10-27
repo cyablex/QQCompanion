@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "app"))
 
 from autopost import AutoPosts  # noqa: E402
 from conversation_followups import ConversationFollowups  # noqa: E402
-from engine import DeliveryUnavailable, Engine  # noqa: E402
+from engine import DeliveryUnavailable, Engine, TaskStateChanged  # noqa: E402
 from friend_proactive import FriendProactive  # noqa: E402
 from group_chat import GroupChats  # noqa: E402
 from media import MediaPipeline  # noqa: E402
@@ -271,6 +271,10 @@ class QQCompanion(Star):
                     await self.engine.reply(contact)
                     self.reply_queue.finish(contact, job["event"])
                     self.schedule_memory(contact)
+                except TaskStateChanged:
+                    # A concurrent task result is normal activity, not a model
+                    # outage. Keep the bounded reply job without a false error notice.
+                    self.reply_queue.retry(contact, job['event'])
                 except BudgetExceeded:
                     self.reply_queue.finish(contact, job["event"])
                     self.store.set("last_error", "Model budget exhausted")

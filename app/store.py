@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from settings import quota_unlimited
 from budget_breakdown import read_budget
 from song_library import SCHEMA as SONG_SCHEMA
+from task_state import SCHEMA as TASK_STATE_SCHEMA
 
 TZ = ZoneInfo("Asia/Shanghai")
 CHAT_KINDS = ("reply", "proactive", "friend_proactive", "song_notice", "song_reply")
@@ -52,6 +53,7 @@ class Store:
         CREATE INDEX IF NOT EXISTS turn_tasks_contact ON turn_tasks(contact,created);
         """)
         self.db.executescript(SONG_SCHEMA)
+        self.db.executescript(TASK_STATE_SCHEMA)
         if recover:
             self.db.execute(
                 "UPDATE actions SET state='failed_not_sent' WHERE state='planned' AND kind IN ('reply','proactive','friend_proactive','error_notice','song_notice','song_reply')"

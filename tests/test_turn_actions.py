@@ -23,7 +23,7 @@ from test_social_rules import make_social
 def turns(songs, monkeypatch):
     e = songs
     e.cfg.update(autonomous_drawing=True, autonomous_profile=True, qzone=True)
-    e.plan = dict(action="reply", messages=["模型正文不能代替执行回执"], tasks=[])
+    e.plan = dict(action="reply", messages=[], tasks=[])
     e.calls, e.responses = [], []
 
     async def generate(system, contexts, **options):
@@ -85,8 +85,8 @@ async def test_song_and_independent_question_both_reply_and_never_repeat(turns):
     task(e, 'song.request', title='雨爱', artist='司凤')
     e.plan['chat_messages'] = ['风格有时会接近，但我也会挑自己感兴趣的东西聊。']
     assert await e.engine.reply('12345')
-    assert len(e.sent) == 2 and e.sent[0][2].get('song_file')
-    assert e.sent[1][1] == e.plan['chat_messages'][0] and not e.sent[1][2]
+    assert len(e.sent) == 2 and e.sent[1][2].get('song_file')
+    assert e.sent[0][1] == e.plan['chat_messages'][0] and not e.sent[0][2]
     assert '模型正文' not in str(e.sent)
     assert await e.engine.reply('12345')
     assert len(e.sent) == 2
@@ -148,7 +148,7 @@ async def test_repeat_uses_confirmed_song_and_longer_unanswered_batch_keeps_ques
     task(e,'song.repeat')
     assert await e.engine.reply('12345')
     assert len([m for m in e.sent if m[2].get('song_file')]) == 2
-    assert e.sent[-1][1] == e.plan['chat_messages'][0]
+    assert e.sent[-2][1] == e.plan['chat_messages'][0]
     assert not any('哪位歌手' in m[1] or '想听哪首' in m[1] for m in e.sent)
 
 
@@ -477,7 +477,11 @@ async def test_finished_drawing_retries_only_definitely_unsent_image(turns, monk
         raise DeliveryUnavailable("before attempting send")
 
     e.engine.send = fail
-    await e.engine.reply("12345")
+    if uncertain:
+        await e.engine.reply("12345")
+    else:
+        with pytest.raises(DeliveryUnavailable):
+            await e.engine.reply("12345")
     assert state(e) == ("unknown" if uncertain else "prepared")
     e.engine.send = original
     await e.engine.reply("12345")
