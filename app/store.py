@@ -176,6 +176,7 @@ class Store:
         self.db.execute("DELETE FROM state WHERE key LIKE ?", (f"vpet:%:{contact}:%",))
         self.db.execute("DELETE FROM state WHERE key LIKE ?", (f"vpet_msg:%:{contact}:%",))
         self.db.execute("DELETE FROM state WHERE key LIKE ?", (f"turn_chat:%:{contact}:%",))
+        self.db.execute("DELETE FROM state WHERE key LIKE ?", (f'vpet_scene:%:{contact}:%',))
         self.db.execute("DELETE FROM state WHERE key LIKE ? OR key LIKE ?", (f'song_offer:%:{contact}', f'outreach_result:%:{contact}'))
         self.db.execute("DELETE FROM state WHERE key LIKE ? OR key LIKE ?", (f'journal_sources:{contact}:%', f'journal_write:{contact}:%'))
         # Keep command deduplication tombstones, but remove private acknowledgments.

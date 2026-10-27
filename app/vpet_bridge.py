@@ -20,6 +20,11 @@ from vpet_messages import PetMessages
 import vpet_runtime
 
 PORT = 8766
+SCENES = {
+    'rice_placed': '主人在桌宠旁放了一碗白米饭，开始了桌面喂饭互动。',
+    'rice_caught': '在桌面喂饭互动里，大肥鱼追到了主人拿着或放下的白米饭，抱住了饭碗。',
+    'rice_finished': '在桌面喂饭互动里，大肥鱼把主人给的白米饭吃完了。',
+}
 DELIVERY = contextvars.ContextVar('vpet_delivery', default=None)
 INTERACTIONS = {'head': '主人在桌宠上摸了摸你的头。', 'body': '主人在桌宠上轻轻戳了你一下。',
                 'lift': '主人把桌宠提了起来。'}
@@ -195,6 +200,34 @@ class VPetBridge:
             finally:
                 DELIVERY.reset(token)
 
+    async def scene(self, value):
+        if (not isinstance(value, dict) or set(value) != {'id', 'kind', 'scope', 'generation'}
+                or not isinstance(value['id'], str) or not re.fullmatch(r'[a-f0-9]{32}', value['id'])
+                or not isinstance(value['kind'], str) or value['kind'] not in SCENES or type(value['generation']) is not int):
+            raise ValueError('不支持的桌面场景记录。')
+        cfg = self.engine.config_reader()
+        owner = cfg['owner_qq']
+        if (value['scope'] != cfg['bot_qq'] + ':' + owner or value['generation'] != self.engine.memory_epoch(owner)
+                or cfg.get('game_mode') or not self.engine.allowed(cfg, owner)
+                or not vpet_runtime.preferences(self.root).get('enabled')):
+            return dict(saved=False, state='inactive')
+        key = f"vpet_scene:{cfg['bot_qq']}:{owner}:{value['id']}"
+        previous = self.store.get(key)
+        if previous:
+            return dict(saved=True, state='recorded')
+        self.store.db.execute('BEGIN IMMEDIATE')
+        try:
+            self.store.message(owner, 'system', '[桌宠场景记录，仅作相处背景] ' + SCENES[value['kind']])
+            message_id = self.store.db.execute('SELECT last_insert_rowid()').fetchone()[0]
+            self.store.set(key, dict(kind=value['kind'], message_id=message_id, generation=value['generation'], created=time.time()))
+            self.store.db.execute('COMMIT')
+        except BaseException:
+            self.store.db.execute('ROLLBACK')
+            raise
+        # A local toy event is evidence, not a new chat command: preserve the
+        # current incoming marker and pending answer, and do not call a model.
+        return dict(saved=True, state='recorded')
+
     async def deliver(self, contact, text, **media):
         target = DELIVERY.get()
         if target is None:
@@ -219,6 +252,8 @@ class VPetBridge:
             return await self.state()
         if method == 'POST' and path == '/interact':
             return await self.interact(value)
+        if method == 'POST' and path == '/scene':
+            return await self.scene(value)
         if method == 'POST' and path == '/chat':
             return await self.chat(value)
         if method == 'GET' and path == '/messages':

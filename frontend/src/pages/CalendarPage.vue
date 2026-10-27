@@ -12,7 +12,7 @@ const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).fo
 const month = ref(today.slice(0, 7)), selected = ref(today), query = ref(''), filter = ref('all')
 const data = ref<Calendar>({ month: month.value, timezone: 'Asia/Shanghai', days: {}, events: [] })
 const busy = ref(false), error = ref('')
-const kinds: Record<string, string> = { diary: '相处日记', episode: '相处片段', project: '共同项目', note: '感受与想法', link: '收藏片段', asset: '留下作品' }
+const kinds: Record<string, string> = { diary: '相处日记', episode: '相处片段', project: '共同项目', note: '感受与想法', link: '收藏片段', asset: '留下作品', scene: '桌宠互动' }
 let serial = 0, searchTimer: ReturnType<typeof setTimeout>, refreshTimer: ReturnType<typeof setInterval>
 const visible = computed(() => data.value.events.filter(e => filter.value === 'all' || (filter.value === 'diary' ? e.kind === 'diary' : e.kind !== 'diary')))
 const days = computed(() => {

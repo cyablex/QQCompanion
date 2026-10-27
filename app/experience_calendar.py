@@ -67,6 +67,13 @@ class ExperienceCalendar:
                 add('memory:' + str(row['id']), row['kind'], title, row['evidence'], row['created'],
                     speaker='你' if source['role'] == 'user' else '大肥鱼', source_id=row['source_id'])
 
+        for row in self.db.execute(
+            "SELECT s.value,m.id,m.text,m.created FROM state s JOIN messages m ON m.id=json_extract(s.value,'$.message_id') "
+            "WHERE s.key LIKE ? AND m.contact=? AND m.created>=? AND m.created<?",
+            (f"vpet_scene:{self.cfg['bot_qq']}:{self.cfg['owner_qq']}:%", self.cfg['owner_qq'], start.timestamp(), end.timestamp())):
+            add('scene:' + str(row['id']), 'scene', '喂白米饭', row['text'], row['created'],
+                speaker='桌面互动', source_id=row['id'])
+
         for project in CreativeProjects(self.db, self.cfg, self.root).list():
             shared = dict(project_id=project['id'], project_title=project['title'])
             add('project:' + project['id'], 'project', project['title'], '开始留下这件共同的事。', project['created'], **shared)

@@ -66,7 +66,7 @@ public sealed class ChatWindow : Window
         {
             var data = await owner.Request("/history");
             var text = string.Join("\n\n", data.GetProperty("messages").EnumerateArray().Select(m =>
-                (m.GetProperty("role").GetString() == "assistant" ? "大肥鱼：" : "你：") + m.GetProperty("content").GetString()));
+                (m.GetProperty("role").GetString() switch { "assistant" => "大肥鱼：", "system" => "桌面场景：", _ => "你：" }) + m.GetProperty("content").GetString()));
             if (history.Text != text) { history.Text = text; history.ScrollToEnd(); }
         }
         catch (Exception) { notice.Text = "聊天记录暂时没有读到，稍后会重新连接。"; }
