@@ -19,9 +19,15 @@ public sealed class PetScenes : IDisposable
     private RiceModel? rice;
     private SceneStamp? stamp;
     private bool recordedCatch, disposed;
+    private bool liftedWhilePressed;
     public RicePhase? RicePhase => rice?.Phase;
     public bool Feeding => rice is not null;
     public bool CanWander => !Feeding && !backend.StartsWith("正在") && idle == "idle" && clock.Elapsed.TotalSeconds >= manualUntil;
+    private static string? PoseActivity(string pose) => pose switch {
+        "read" => "翻翻手边的书 · 陪伴动作", "draw" => "随手涂几笔 · 陪伴动作",
+        "stretch" => "伸个懒腰", "hum" => "晃晃身子", "look" => "看看四周",
+        "yawn" => "打个哈欠", "greeting" => "提裙打个招呼", _ => null
+    };
     private string? activity;
     public string? Activity { get => activity; private set { if (activity == value) return; activity = value; owner.UpdateActivity(); } }
     public PetScenes(PetWindow owner, PetVisuals visuals)
@@ -30,13 +36,13 @@ public sealed class PetScenes : IDisposable
         timer.Tick += (_, _) => Tick(); timer.Start();
     }
     public void Backend(string value) { backend = value; }
-    public void React(string kind = "head") { reactionPose = kind != "lift" && visuals.CurrentPose is "read" or "write" or "rest" ? visuals.CurrentPose : kind; reactionUntil = clock.Elapsed.TotalSeconds + 2; visuals.React(kind, clock.Elapsed.TotalSeconds); }
+    public void React(string kind = "head") { reactionPose = !visuals.VideoReady && kind != "lift" && visuals.CurrentPose is "read" or "write" or "rest" ? visuals.CurrentPose : kind; liftedWhilePressed = kind == "lift" && owner.PetPressed; reactionUntil = clock.Elapsed.TotalSeconds + visuals.ReactionDuration(kind); visuals.React(kind, clock.Elapsed.TotalSeconds); }
     public void StartWalk() { idle = "idle"; manualUntil = 0; until = clock.Elapsed.TotalSeconds + 12; }
     public void Choose(string pose)
     {
         if (Feeding) return;
         owner.FreezePetMovement(); idle = pose;
-        until = clock.Elapsed.TotalSeconds + (pose == "stretch" ? 5 : 25);
+        until = clock.Elapsed.TotalSeconds + (pose is "stretch" or "greeting" ? 10 : 25);
         manualUntil = until;
     }
     public void SpawnRice()
@@ -50,7 +56,7 @@ public sealed class PetScenes : IDisposable
         var area = SystemParameters.WorkArea;
         location.X = Math.Clamp(location.X, area.Left + bowl.Width * .5, area.Right - bowl.Width * .5);
         location.Y = Math.Clamp(location.Y, area.Top + bowl.Height * .5, area.Bottom - bowl.Height * .5);
-        bowl.CenterAt(location); rice = new RiceModel(location);
+        bowl.CenterAt(location); rice = new RiceModel(location) { EatingDuration = visuals.VideoReady ? 241d / 24 : 6.5 };
         bowl.PickedUp = () => rice?.BeginDrag();
         bowl.Dragged = point => rice?.MoveFood(point);
         bowl.Dropped = () => rice?.Release();
@@ -66,7 +72,7 @@ public sealed class PetScenes : IDisposable
         if (disposed) return;
         double now = clock.Elapsed.TotalSeconds, dt = Math.Min(.1, Math.Max(0, now - last)); last = now;
         double movement = owner.Left - previousLeft; previousLeft = owner.Left;
-        if (!owner.IsVisible) return;
+        if (!owner.IsVisible || owner.WindowState == WindowState.Minimized) { visuals.Suspend(); return; }
         if (rice is not null && bowl is not null)
         {
             owner.FreezePetMovement();
@@ -100,22 +106,27 @@ public sealed class PetScenes : IDisposable
             }
             return;
         }
-        if (now < reactionUntil) { Activity = null; visuals.Show(reactionPose, now); return; }
+        if (reactionPose == "lift" && liftedWhilePressed && !owner.PetPressed) { liftedWhilePressed = false; reactionUntil = 0; }
+        if (now < reactionUntil || reactionPose == "lift" && liftedWhilePressed && owner.PetPressed) { Activity = null; visuals.Show(reactionPose, now); return; }
         if (backend == "正在写日记") { Activity = null; owner.FreezePetMovement(); visuals.Show("write", now); return; }
         if (Math.Abs(movement) > .05 && !owner.PetPressed && !owner.QuietMode) { Activity = "散步一下"; visuals.Show("walk_" + (movement < 0 ? "left" : "right") + ((int)(now * 5) % 2), now, true); return; }
-        if (now < manualUntil) { Activity = idle == "stretch" ? "伸个懒腰" : idle == "draw" ? "随手涂几笔 · 陪伴动作" : "翻翻手边的书 · 陪伴动作"; visuals.Show(idle == "draw" ? "write" : idle, now); return; }
+        if (manualUntil > 0)
+        {
+            if (now < manualUntil || !visuals.AtVideoBoundary) { Activity = PoseActivity(idle); visuals.Show(idle == "draw" ? "write" : idle, now); return; }
+            manualUntil = 0;
+        }
         if (owner.QuietMode) { Activity = "安静休息"; visuals.Show("rest", now); return; }
         if (owner.PetPressed) { Activity = null; visuals.Show("excited", now); return; }
         if (backend.StartsWith("正在画画")) { Activity = null; visuals.Show("write", now); return; }
         if (backend.StartsWith("正在") && backend != "正在休息") { Activity = null; visuals.Show("idle", now); return; }
-        if (now >= until)
+        if (now >= until && visuals.AtVideoBoundary)
         {
-            idle = owner.DailyActivities ? new[] { "idle", "idle", "read", "draw", "stretch" }[Random.Shared.Next(5)] : "idle";
+            idle = owner.DailyActivities ? (visuals.VideoReady ? new[] { "idle", "idle", "hum", "look", "read", "draw", "stretch", "yawn" }[Random.Shared.Next(8)] : new[] { "idle", "idle", "read", "draw", "stretch" }[Random.Shared.Next(5)]) : "idle";
             until = now + (idle == "stretch" ? 5 : Random.Shared.Next(18, 38));
             if (idle != "idle") owner.FreezePetMovement();
         }
-        Activity = idle switch { "read" => "翻翻手边的书 · 陪伴动作", "draw" => "随手涂几笔 · 陪伴动作", "stretch" => "伸个懒腰", _ => null };
+        Activity = PoseActivity(idle);
         visuals.Show(idle == "draw" ? "write" : idle, now);
     }
-    public void Dispose() { if (disposed) return; disposed = true; timer.Stop(); CancelRice(); }
+    public void Dispose() { if (disposed) return; disposed = true; timer.Stop(); CancelRice(); visuals.Dispose(); }
 }

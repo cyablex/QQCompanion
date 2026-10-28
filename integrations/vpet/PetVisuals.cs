@@ -10,7 +10,7 @@ using Point = System.Windows.Point;
 
 namespace DafeiyuPet;
 
-public sealed class PetVisuals
+public sealed partial class PetVisuals : IDisposable
 {
     public Grid View { get; } = new() { IsHitTestVisible = false };
     private readonly Image front = new() { Stretch = Stretch.Uniform };
@@ -35,6 +35,8 @@ public sealed class PetVisuals
     public PetVisuals(string root)
     {
         var folder = Path.Combine(root, "vpet", "characters", "dafeiyu-v1");
+        if (!PrepareVideo(folder))
+        {
         foreach (string pose in new[] { "idle", "read", "draw", "stretch", "excited", "eat", "rest", "walk_left0", "walk_left1", "walk_right0", "walk_right1" })
         {
             string path = Path.Combine(folder, "poses", pose + ".png");
@@ -56,6 +58,7 @@ public sealed class PetVisuals
             }
             else clips[pose] = new(frames, durations);
         }
+        }
         View.Children.Add(back); View.Children.Add(front); View.Children.Add(accents);
         RenderOptions.SetBitmapScalingMode(front, BitmapScalingMode.HighQuality);
         RenderOptions.SetBitmapScalingMode(back, BitmapScalingMode.HighQuality);
@@ -68,9 +71,10 @@ public sealed class PetVisuals
         bitmap.CreateOptions = BitmapCreateOptions.IgnoreImageCache; bitmap.UriSource = new Uri(Path.GetFullPath(path)); bitmap.EndInit(); bitmap.Freeze();
         return bitmap;
     }
-    public void React(string kind, double seconds) { reaction = kind; reactionAt = seconds; }
+    public void React(string kind, double seconds) { reaction = kind; reactionAt = seconds; if (kind == "head" && VideoReady) { var choices = new[] { "head", "wave", "body" }.Where(value => value != headVideo).ToArray(); headVideo = choices[Random.Shared.Next(choices.Length)]; } }
     public void Show(string pose, double seconds, bool walking = false)
     {
+        if (ShowVideo(pose, seconds)) return;
         bool sameWalk = current.StartsWith("walk_") && pose.StartsWith("walk_");
         bool changed = current != pose && !sameWalk;
         if (sameWalk) current = pose;

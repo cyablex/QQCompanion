@@ -13,6 +13,7 @@ public sealed class RiceModel
     public bool Held { get; private set; }
     public bool Caught { get; private set; }
     public double EatingSeconds { get; private set; }
+    public double EatingDuration { get; set; } = 6.5;
     public RiceModel(Point food) { Food = food; }
     public void MoveFood(Point food) { Food = food; }
     public void BeginDrag()
@@ -52,7 +53,7 @@ public sealed class RiceModel
         if (Phase == RicePhase.Eating)
         {
             EatingSeconds += seconds;
-            if (EatingSeconds >= 6.5) Phase = RicePhase.Finished;
+            if (EatingSeconds >= EatingDuration) Phase = RicePhase.Finished;
         }
         return pet;
     }

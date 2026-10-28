@@ -153,7 +153,7 @@ class VPetBridge:
                     generation=self.engine.memory_epoch(cfg['owner_qq']),
                     scope=cfg['bot_qq'] + ':' + cfg['owner_qq'],
                     diary=diary,
-                    character='大肥鱼·蓝发女仆' if (Path(self.root) / 'vpet/characters/dafeiyu-v1/character.json').is_file() else 'VPet演示形象',
+                    character='大肥鱼·蓝发女仆' if any((Path(self.root) / 'vpet/characters/dafeiyu-v1' / name).is_file() for name in ('character.json', 'video/pack.json')) else 'VPet演示形象',
                     project=project['title'] if project else '', next_step=project['next_step'] if project else '')
 
     async def interact(self, value):

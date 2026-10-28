@@ -111,6 +111,7 @@ public sealed class PetWindow : Window, IController
         bubble.MouseLeftButtonDown += (_, _) => { if (bubbleAction is not null) bubbleAction(); else OpenChat(); };
         stage = new Grid { Height = 500 * zoom, Width = 500 * zoom };
         visuals = new PetVisuals(root);
+        visuals.VideoFailed += reason => { Directory.CreateDirectory(Path.Combine(root, "logs")); File.AppendAllText(Path.Combine(root, "logs", "vpet-video.log"), DateTime.Now + " " + reason + Environment.NewLine); ShowBubble("动画暂未能播放，已保留同一角色的静态画面。可以重新打开桌宠重试。"); };
         visuals.ReducedMotion = preferences.ReducedMotion || !SystemParameters.ClientAreaAnimation;
         scenes = new PetScenes(this, visuals);
         stack.Children.Add(stage);
@@ -134,6 +135,7 @@ public sealed class PetWindow : Window, IController
         AddMenu(menu, "翻翻手边的书", () => scenes.Choose("read"));
         AddMenu(menu, "随手涂几笔", () => scenes.Choose("draw"));
         AddMenu(menu, "伸个懒腰", () => scenes.Choose("stretch"));
+        if (visuals.VideoReady) AddMenu(menu, "提裙打个招呼", () => scenes.Choose("greeting"));
         AddMenu(menu, "喂大白饭", scenes.SpawnRice);
         AddMenu(menu, "收起米饭", scenes.CancelRice);
         AddMenu(menu, "安静陪伴 / 恢复", () => SetQuiet(!preferences.Quiet));
@@ -158,7 +160,7 @@ public sealed class PetWindow : Window, IController
         resetSize.Click += (_, _) => sizeSlider.Value = 100;
         sizePanel.Children.Add(sizeLabel); sizePanel.Children.Add(sizeSlider); sizePanel.Children.Add(resetSize);
         menu.Items.Add(new MenuItem { Header = sizePanel, StaysOpenOnClick = true, Focusable = false });
-        AddMenu(menu, "关于当前形象", () => ShowBubble(File.Exists(Path.Combine(root, "vpet", "characters", "dafeiyu-v1", "character.json"))
+        AddMenu(menu, "关于当前形象", () => ShowBubble(visuals.VideoReady ? "蓝发女仆透明视频形象，14段连续动作，24帧/秒。和QQ共用人设与任务；日常动作不写日记，语音口型待补充。" : File.Exists(Path.Combine(root, "vpet", "characters", "dafeiyu-v1", "character.json"))
             ? visuals.Ready ? "蓝发女仆高清形象；有读书、涂画、伸懒腰、休息和追饭动作。和 QQ 共用人设与记忆；日常姿态属于本地陪伴动作。" : "蓝发女仆基础动作，复用本机 QQ 表情；和 QQ 共用同一套人设与记忆。可准备本机高清姿态，语音口型待补充。"
             : "当前为 VPet 原作者演示素材；本机有女仆表情包时，可运行角色准备工具接入。"));
         AddMenu(menu, "退出桌宠", Quit);
@@ -315,7 +317,7 @@ public sealed class PetWindow : Window, IController
     }
     public void OpenChat() { if (quitting) return; Chat.Show(); Chat.Activate(); }
     private void Quit() { Disable(); quitting = true; Close(); }
-    private void HideCompletely() { scenes.CancelRice(); FreezePetMovement(); Hide(); peek?.Hide(); Chat.Hide(); bubblePopup.IsOpen = false; media.Stop(); media.Quiet = true; }
+    private void HideCompletely() { scenes.CancelRice(); FreezePetMovement(); visuals.Suspend(); Hide(); peek?.Hide(); Chat.Hide(); bubblePopup.IsOpen = false; media.Stop(); media.Quiet = true; }
     private void ToggleVisible()
     {
         if (!IsVisible) { RestoreFromPeek(); return; }

@@ -42,7 +42,7 @@ def download(url, target):
                 raise
 
 
-def prepare(root=ROOT, sdk=None):
+def prepare(root=ROOT, sdk=None, video=False):
     root = Path(root).resolve()
     sdk = Path(sdk) if sdk else root / 'runtime/dotnet-sdk/dotnet.exe'
     if not sdk.is_file():
@@ -80,6 +80,9 @@ def prepare(root=ROOT, sdk=None):
     from prepare_companion_art import prepare as prepare_companion_art
     prepare_poses(root)
     prepare_companion_art(root)
+    if video:
+        from prepare_pet_video import prepare as prepare_video
+        prepare_video(root)
     subprocess.run([str(sdk), 'publish', str(root / 'integrations/vpet/DafeiyuPet.csproj'), '-c', 'Release',
                     '-r', 'win-x64', '--self-contained', 'false', '-o', str(root / 'vpet/host')], env=env, check=True)
     print(json.dumps(dict(prepared=True, assets=len(selected), enabled=False)))
@@ -89,5 +92,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=ROOT)
     parser.add_argument('--sdk', type=Path)
+    parser.add_argument('--video', action='store_true', help='同时准备可选MIT透明视频动作，需要FFmpeg')
     options = parser.parse_args()
-    prepare(options.root, options.sdk)
+    prepare(options.root, options.sdk, options.video)
