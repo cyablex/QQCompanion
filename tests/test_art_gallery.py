@@ -17,6 +17,25 @@ from sketchbook import parse_scene, render_scene, Sketchbook
 from store import Store
 
 
+def test_whale_variants_change_shape_and_pose_without_detaching_parts(tmp_path):
+    images = []
+    for index, options in enumerate([{}, dict(shape='slender'), dict(pose='up', fin='wave'), dict(pose='down')]):
+        scene = parse_scene(json.dumps(dict(action='draw', self_portrait=True, title='鲸鱼', caption='各不相同',
+            elements=[dict(type='whale', box=[100,100,900,900], **options)])))
+        path = tmp_path / f'{index}.png'
+        render_scene(scene, path)
+        images.append(path.read_bytes())
+    assert len(set(images)) == 4
+
+
+def test_self_portrait_can_use_its_own_connected_curve_group():
+    body = dict(type='bezier', closed=True, points=[[100,400],[100,100],[900,100],[900,400],[900,800],[100,800],[100,400]], fill='#75bdea')
+    face = [dict(type='ellipse', box=[650,350,690,400]), dict(type='line',points=[[680,450],[730,460]])]
+    scene = parse_scene(json.dumps(dict(action='draw',self_portrait=True,title='自由鲸鱼',caption='新的轮廓',
+        elements=[dict(type='group',box=[100,100,900,900],elements=[body,*face])])))
+    assert scene['elements'][0]['elements'][0] == body
+
+
 def test_connected_whale_renders_inside_its_group_with_visible_shading(tmp_path):
     scene = parse_scene(json.dumps(dict(action='draw', self_portrait=True, title='鲸鱼', caption='安静的小鲸鱼',
         background='#ffffff', elements=[dict(type='whale', box=[100,200,900,800], facing='left', mood='开心')]), ensure_ascii=False))

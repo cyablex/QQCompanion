@@ -4,6 +4,7 @@ import ctypes
 import os
 import sys
 import traceback
+import tempfile
 
 from settings import ROOT
 
@@ -58,8 +59,12 @@ def main():
             text_select=True,
         )
         api._attach_window(window)
-        storage = ROOT / "cache/desktop-webview"
-        storage.mkdir(parents=True, exist_ok=True)
+        profiles = ROOT / "cache/desktop-webview"
+        profiles.mkdir(parents=True, exist_ok=True)
+        # A closing WebView2 child can still hold its profile lock. Each launch
+        # owns a separate profile so rapid reopening cannot reuse that lock.
+        session = tempfile.TemporaryDirectory(prefix='session-', dir=profiles, ignore_cleanup_errors=True)
+        storage = session.name
         os.environ["TEMP"] = str(storage)
         os.environ["TMP"] = str(storage)
         webview.start(
@@ -68,6 +73,7 @@ def main():
             private_mode=True,
             storage_path=str(storage),
         )
+        session.cleanup()
     finally:
         kernel.CloseHandle(ctypes.c_void_p(handle))
 

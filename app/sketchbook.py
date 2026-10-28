@@ -32,10 +32,10 @@ polygon 用 points=[[x,y],...]；line 用 points；arc 用 box、start、end（�
 bezier 用4、7、10至25个points，每3个点为一段三次曲线的两个控制点和终点，closed=true可闭合填色。
 text 用 at=[x,y]、text（最多30字）、size（12至70）。图形可用fill、stroke和width（1至16）。
 画自己时必须使用普通鲸鱼，不画鲸鱼娘、人脸、蓝发女仆、人体或人形四肢。QQ人设外观不等于这套简笔画的画法。
-鲸鱼必须用完整角色图元：{"type":"whale","box":[左,上,右,下],"facing":"right","mood":"平静","fill":"#75bdea","fill2":"#449ccc"}。
+鲸鱼可用完整角色图元：{"type":"whale","box":[左,上,右,下],"facing":"right","mood":"平静","fill":"#75bdea","fill2":"#449ccc"}。
 facing为left/right；mood沿用允许的六种心情。身体、尾鳍、胸鳍和五官由本地统一连接定位，不另画一个悬空头。
-鲸鱼可以自由安排位置、大小、朝向和互动道具，周围场景继续自由构图；别把角色模板当成整张固定画。
-画到自己时加self_portrait=true，且至少有一个whale图元；其它题材不需要。
+鲸鱼图元可加shape（round圆胖/slender修长）、pose（level平游/up抬头/down低头）、fin（relaxed自然/wave挥鳍），每幅按动作与心情选择，不要总用同一轮廓。也可直接用group、bezier等画完整普通鲸鱼，自由改变轮廓、姿势和五官，须保持身体、尾鳍与五官相连。
+画到自己时加self_portrait=true；可用whale或自己组合的完整鲸鱼group，其它题材不需要。
 text的at是文字左上角，不是基线；文字高度大约占size×1.5个纵向坐标单位，牌子中的文字要留足上下边距。
 颜色为#RRGGBB；无需填充用fill=null。线条使用stroke。可选background2作背景渐变，图形fill2作柔和渐变，shadow=false关阴影；style可选soft（默认）或flat。只有这些图元，不输出代码、SVG或网址。
 画画可以只是因为自己想画、看着舒服或心情开心，不需要知识点、研究进展、寓意或笑点。
@@ -57,10 +57,12 @@ def parse_scene(raw):
     if not all(isinstance(value.get(k), str) and value[k].strip() for k in ("title", "caption")):
         raise ValueError("Drawing needs a title and caption")
     elements = flatten_elements(value.get("elements"))
-    def contains_whale(items):
-        return any(item.get('type') == 'whale' or (item.get('type') == 'group' and contains_whale(item.get('elements', []))) for item in items)
-    if (value.get('self_portrait') is True or '鲸鱼娘' in str(value.get('composition', ''))) and not contains_whale(value['elements']):
-        raise ValueError('Self portraits must use the connected whale primitive')
+    def connected(items):
+        return any(i.get('type') == 'whale' or (i.get('type') == 'group' and
+                   (any(p.get('type') == 'bezier' and p.get('closed') for p in i.get('elements', []))
+                    or connected(i.get('elements', [])))) for i in items)
+    if value.get('self_portrait') is True and not connected(value['elements']):
+        raise ValueError('Self portraits need a connected whale silhouette or group')
     if not 3 <= len(elements) <= 100:
         raise ValueError("Invalid drawing element count")
     color = re.compile(r"#[0-9a-fA-F]{6}\Z")
@@ -161,6 +163,25 @@ def whale_elements(item):
              dict(type='bezier', points=[[775,528],[805,553],[834,548],[850,522]], stroke=ink, width=3)]
     if item.get('mood') in {'困倦', '平静'}:
         parts[3:5] = [dict(type='bezier', points=[[745,460],[760,474],[779,474],[791,458]], stroke=ink, width=4)]
+    shape = item.get('shape', 'round')
+    pose = item.get('pose', 'level')
+    fin = item.get('fin', 'relaxed')
+    if shape not in {'round', 'slender'} or pose not in {'level', 'up', 'down'} or fin not in {'relaxed', 'wave'}:
+        raise ValueError('Invalid whale variation')
+    if fin == 'wave':
+        parts[2]['points'] = [[550,590],[480,510],[450,440],[490,420],[550,450],[610,520],[620,575]]
+    def vary(x, y):
+        # One affine transform moves silhouette, face and fins together.
+        height = .72 if shape == 'slender' else 1
+        slope = -.13 if pose == 'up' else .13 if pose == 'down' else 0
+        return [x, 500 + (y - 500) * height + (x - 500) * slope]
+    for part in parts:
+        if 'points' in part:
+            part['points'] = [vary(x, y) for x, y in part['points']]
+        if 'box' in part:
+            x1, y1, x2, y2 = part['box']
+            corners = [vary(x, y) for x in (x1, x2) for y in (y1, y2)]
+            part['box'] = [x1, min(p[1] for p in corners), x2, max(p[1] for p in corners)]
     if item.get('facing') == 'left':
         for part in parts:
             if 'points' in part:

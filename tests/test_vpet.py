@@ -37,21 +37,13 @@ def pet(engine_setup, tmp_path):  # noqa: F811
 
 
 @pytest.mark.asyncio
-async def test_touch_uses_existing_engine_and_shared_history_but_no_qq_send(pet):
-    store, cfg, engine, sent, prompts, bridge, _ = pet
+async def test_touch_stays_local_without_history_or_model_calls(pet):
+    store, cfg, _, sent, prompts, bridge, _ = pet
     request = dict(id=uuid.uuid4().hex, kind='head')
-    result = await bridge.interact(request)
-    assert result['messages'] == ['hello'] and result['saved']
-    assert not sent and len(prompts) == 1
-    history = store.history(cfg['owner_qq'])
-    assert '桌宠互动' in history[0]['content'] and history[-1]['content'] == 'hello'
-    assert await bridge.interact(request) == result
-    assert len(prompts) == 1
-    assert (await bridge.interact(dict(id=uuid.uuid4().hex, kind='body')))['state'] == 'cooldown'
-    assert len(store.history(cfg['owner_qq'])) == 2
-    store.incoming('qq-after-pet', cfg['owner_qq'], '刚才摸了哪里？')
-    await engine.reply(cfg['owner_qq'])
-    assert sent and '桌宠互动' in str(prompts[-1])
+    for _ in range(3):
+        assert await bridge.interact(request) == dict(messages=[], saved=False, state='local')
+    assert not sent and not prompts and not store.history(cfg['owner_qq'])
+    assert not store.db.execute("SELECT 1 FROM state WHERE key LIKE 'vpet:%'").fetchone()
 
 
 @pytest.mark.asyncio
@@ -73,26 +65,6 @@ async def test_game_mode_blocks_interaction_and_status_never_calls_model(pet):
     assert not prompts and not store.history(cfg['owner_qq'])
 
 
-@pytest.mark.asyncio
-async def test_forget_cannot_resurrect_interaction_receipt_after_model_returns(pet):
-    store, cfg, engine, sent, _, bridge, _ = pet
-    started, release = asyncio.Event(), asyncio.Event()
-    original = engine.generate
-
-    async def generate(*args, **kwargs):
-        started.set()
-        await release.wait()
-        return await original(*args, **kwargs)
-
-    engine.generate = generate
-    task = asyncio.create_task(bridge.interact(dict(id='b' * 32, kind='head')))
-    await started.wait()
-    store.forget(cfg['owner_qq'])
-    release.set()
-    result = await task
-    assert result['state'] == 'forgotten'
-    assert not sent and not store.history(cfg['owner_qq'])
-    assert not store.db.execute("SELECT 1 FROM state WHERE key LIKE 'vpet:%'").fetchone()
 
 
 def test_game_mode_closes_only_owned_pet_and_restores_requested_state(tmp_path, monkeypatch):

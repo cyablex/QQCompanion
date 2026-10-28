@@ -165,45 +165,8 @@ class VPetBridge:
         owner = cfg['owner_qq']
         if cfg.get('game_mode') or not vpet_runtime.preferences(self.root).get('enabled') or not self.engine.allowed(cfg, owner):
             return dict(messages=[], saved=False, state='paused')
-        key = self._key(cfg, value['id'])
-        async with self.engine.contact_locks.setdefault(owner, asyncio.Lock()):
-            # Bind the actual local installation's owner, never an identity from the client.
-            fresh = self.engine.config_reader()
-            if (fresh['owner_qq'] != owner or fresh['bot_qq'] != cfg['bot_qq'] or fresh.get('game_mode')
-                    or not self.engine.allowed(fresh, owner) or not vpet_runtime.preferences(self.root).get('enabled')):
-                return dict(messages=[], saved=False, state='paused')
-            previous = self.store.get(key)
-            if previous:
-                return previous
-            now = time.time()
-            # Frequent touches still animate locally; only a bounded interaction reaches the model/history.
-            if now - self.last_reply < 30:
-                return dict(messages=[], saved=False, state='cooldown')
-            self.last_reply = now
-            self.store.incoming('vpet:' + value['id'], owner, '[桌宠互动] ' + INTERACTIONS[value['kind']])
-            self.record_source('vpet:' + value['id'], cfg)
-            generation = self.engine.memory_epoch(owner)
-            pending = dict(messages=[], saved=True, state='recorded')
-            self.store.set(key, pending)
-            target = []
-            token = DELIVERY.set(dict(messages=target, event=value['id']))
-            try:
-                result = await self.engine.decision(owner, 'pet_interaction',
-                    INTERACTIONS[value['kind']] + '这是刚发生的真实桌面互动。用你平常的性格简短回应一两句即可。'
-                    '此次只回应互动，不点歌、不画画、不修改资料、不执行任务，也不承诺稍后做事。'
-                    '使用结构化回复协议，只输出reply或skip及messages、memory。')
-                if result and result.get('action') == 'reply':
-                    from turn_actions import TurnActions
-                    TurnActions.decode(json.dumps(dict(action='reply', messages=result['messages'], tasks=[])), cfg, result['read_through'])
-                    safe = {field: result[field] for field in ('action', 'messages', 'revision', 'read_through', 'memory_generation') if field in result}
-                    await self.engine.deliver(owner, 'reply', safe, key=key + ':reply')
-                if self.engine.memory_epoch(owner) != generation:
-                    return dict(messages=[], saved=False, state='forgotten')
-                saved = dict(messages=target, saved=True, state='replied' if target else 'recorded')
-                self.store.set(key, saved)
-                return saved
-            finally:
-                DELIVERY.reset(token)
+        # Routine touch is local animation, not a chat turn or memory source.
+        return dict(messages=[], saved=False, state='local')
 
     async def scene(self, value):
         if (not isinstance(value, dict) or set(value) != {'id', 'kind', 'scope', 'generation'}
@@ -216,22 +179,8 @@ class VPetBridge:
                 or cfg.get('game_mode') or not self.engine.allowed(cfg, owner)
                 or not vpet_runtime.preferences(self.root).get('enabled')):
             return dict(saved=False, state='inactive')
-        key = f"vpet_scene:{cfg['bot_qq']}:{owner}:{value['id']}"
-        previous = self.store.get(key)
-        if previous:
-            return dict(saved=True, state='recorded')
-        self.store.db.execute('BEGIN IMMEDIATE')
-        try:
-            self.store.message(owner, 'system', '[桌宠场景记录，仅作相处背景] ' + SCENES[value['kind']])
-            message_id = self.store.db.execute('SELECT last_insert_rowid()').fetchone()[0]
-            self.store.set(key, dict(kind=value['kind'], message_id=message_id, generation=value['generation'], created=time.time()))
-            self.store.db.execute('COMMIT')
-        except BaseException:
-            self.store.db.execute('ROLLBACK')
-            raise
-        # A local toy event is evidence, not a new chat command: preserve the
-        # current incoming marker and pending answer, and do not call a model.
-        return dict(saved=True, state='recorded')
+        # Accept older hosts without persisting their high-frequency toy events.
+        return dict(saved=False, state='local')
 
     async def write_diary(self, value):
         from datetime import datetime

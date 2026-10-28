@@ -24,22 +24,20 @@ def payload(cfg, kind='rice_placed', generation=0):
 
 
 @pytest.mark.asyncio
-async def test_food_scene_records_evidence_without_model_call_or_interrupting_chat(pet):
+async def test_food_scene_never_becomes_history_or_calendar_evidence(pet):
     store, cfg, engine, sent, prompts, bridge, root = pet
     store.incoming('question', cfg['owner_qq'], '上一件事情怎么样了？')
     through = store.last_incoming(cfg['owner_qq'])
     event = payload(cfg)
-    assert await bridge.scene(event) == dict(saved=True, state='recorded')
-    assert await bridge.scene(event) == dict(saved=True, state='recorded')
+    assert await bridge.scene(event) == dict(saved=False, state='local')
+    assert await bridge.scene(event) == dict(saved=False, state='local')
     assert store.last_incoming(cfg['owner_qq']) == through
     assert not prompts and not sent
-    scenes = [m for m in store.history(cfg['owner_qq']) if '[桌宠场景记录' in m['content']]
-    assert len(scenes) == 1 and scenes[0]['role'] == 'system'
+    assert not store.db.execute("SELECT 1 FROM state WHERE key LIKE 'vpet_scene:%'").fetchone()
     calendar = ExperienceCalendar(store.db, cfg, root).month(datetime.now(TZ).strftime('%Y-%m'))
-    scene = [e for e in calendar['events'] if e['kind'] == 'scene']
-    assert len(scene) == 1 and '放了一碗白米饭' in scene[0]['text']
+    assert not [e for e in calendar['events'] if e['kind'] == 'scene']
     assert await engine.reply(cfg['owner_qq'])
-    assert '上一件事情' in str(prompts) and '放了一碗白米饭' in str(prompts)
+    assert '放了一碗白米饭' not in str(prompts)
 
 
 @pytest.mark.asyncio
@@ -57,23 +55,12 @@ async def test_scene_during_model_generation_keeps_the_pending_answer(pet):
     store.incoming('active-question', cfg['owner_qq'], '你刚才说的呢？')
     answer = asyncio.create_task(engine.reply(cfg['owner_qq']))
     await asyncio.wait_for(entered.wait(), 2)
-    assert (await bridge.scene(payload(cfg, 'rice_finished')))['saved']
+    assert not (await bridge.scene(payload(cfg, 'rice_finished')))['saved']
     release.set()
     assert await asyncio.wait_for(answer, 2)
     assert sent == [(cfg['owner_qq'], 'hello')]
 
 
-@pytest.mark.asyncio
-async def test_scene_progress_has_exact_evidence_and_disappears_after_forget(pet):
-    store, cfg, engine, _, prompts, bridge, root = pet
-    for kind in ['rice_placed', 'rice_caught', 'rice_finished']:
-        assert (await bridge.scene(payload(cfg, kind)))['saved']
-    calendar = ExperienceCalendar(store.db, cfg, root)
-    month = datetime.now(TZ).strftime('%Y-%m')
-    assert len([e for e in calendar.month(month)['events'] if e['kind'] == 'scene']) == 3
-    store.forget(cfg['owner_qq'])
-    assert not (await bridge.scene(payload(cfg, 'rice_finished', 0)))['saved']
-    assert not calendar.month(month)['events'] and not prompts
 
 
 @pytest.mark.asyncio

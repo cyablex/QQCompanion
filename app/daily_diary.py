@@ -27,6 +27,7 @@ class DailyDiary:
             day = date.strftime('%Y-%m-%d')
             rows = self.db.execute('SELECT id,role,text,created FROM messages WHERE contact=? AND created>=? AND created<? ORDER BY id',
                                    (owner, date.timestamp(), (date + timedelta(days=1)).timestamp())).fetchall()
+            rows = [r for r in rows if not r['text'].startswith(('[桌宠互动]', '[桌宠场景记录'))]
             if len(rows) < 4 or not any(r['role'] == 'user' for r in rows):
                 return False
             key = f"journal_write:{owner}:{day}"

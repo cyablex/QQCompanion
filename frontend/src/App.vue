@@ -112,7 +112,7 @@ onUnmounted(() => { clearInterval(timer); stopWelcome?.(); welcomeAudio?.pause()
       <div class="brand"><div class="brand-mark">𓆝</div><div><strong>大肥鱼</strong><span>一点陪伴，一点日常</span></div></div>
       <div class="nav-label">你的控制台</div>
       <nav aria-label="主导航"><button v-for="item in nav" :key="item.id" :class="{ active: page === item.id }" @click="page = item.id"><AppIcon :name="item.icon" /><span>{{ item.label }}</span><span v-if="page === item.id" class="nav-dot" /></button></nav>
-      <div class="sidebar-bottom"><button class="opening-replay" @click="opening = true">重播开场 <span>↗</span></button><div class="local-badge"><span class="dot" />本机运行</div><p>把复杂留在后台，<br />把日常留给大肥鱼。</p><span class="version">{{ status?.version || 'V5.12' }} · 天蓝桌面</span></div>
+      <div class="sidebar-bottom"><button class="opening-replay" @click="opening = true">重播开场 <span>↗</span></button><div class="local-badge"><span class="dot" />本机运行</div><p>把复杂留在后台，<br />把日常留给大肥鱼。</p><span class="version">{{ status?.version || 'V5.13' }} · 天蓝桌面</span></div>
     </aside>
     <main class="main-area">
       <header class="topbar"><span>{{ nav.find(n => n.id === page)?.en }}</span><div><span class="small muted">独立桌面控制台</span><span class="top-divider" /><span class="small"><span class="dot" :class="{ amber: !status?.connected }" />{{ status?.connected ? 'QQ 已连接' : status?.phase === 'stopped' ? '后台已停止' : connected ? '正在检查连接' : '连接控制台中' }}</span></div></header>

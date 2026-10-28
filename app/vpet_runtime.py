@@ -110,10 +110,12 @@ def open_console(page, root=ROOT, day=''):
     atomic_json(root / 'data/desktop-navigation.json', dict(page=page, day=day, created=time.time()))
     if os.name == 'nt':
         import ctypes
-        window = ctypes.windll.user32.FindWindowW(None, '大肥鱼控制台')
+        user = ctypes.windll.user32
+        user.FindWindowW.restype = ctypes.c_void_p
+        window = user.FindWindowW(None, '大肥鱼控制台')
         if window:
-            ctypes.windll.user32.ShowWindow(window, 9)
-            ctypes.windll.user32.SetForegroundWindow(window)
+            user.ShowWindow(ctypes.c_void_p(window), 9)
+            user.SetForegroundWindow(ctypes.c_void_p(window))
             return
     subprocess.Popen(['cmd.exe', '/c', str(root / '打开大肥鱼控制台.cmd')], cwd=root,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
