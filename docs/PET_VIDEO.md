@@ -34,7 +34,9 @@ runtime/python.exe -X utf8 tools/prepare_pet_video.py
 runtime/python.exe -X utf8 tools/prepare_pet_smooth.py --source vpet/characters/dafeiyu-v1/video --output work/smooth-pack --ffmpeg "FFmpeg完整路径" --rife "rife-ncnn-vulkan.exe完整路径" --model "rife-v4.6完整目录" --fps 60 --speed 1.35
 ```
 
-工具在黑、白背景分别插帧后还原透明通道，保留循环端点并无损编码VP9；中间帧位于输出目录旁的`smooth-frames/`，占用空间明显大于最终动作包，验收后可删除。检查形象、透明边缘和循环后，关闭桌宠，将生成目录完整复制为`vpet/characters/dafeiyu-v1/video-smooth/`，并安装V5.15宿主。只在完整生成后才会写入`pack.json`。宿主有此目录时优先使用，否则继续播放原24帧动作包。移走`video-smooth`目录并重启桌宠即可回到原动作包。
+工具在黑、白背景分别插帧后还原透明通道，无损编码VP9；中间帧位于输出目录旁的`输出目录名-frames/`，占用空间明显大于最终动作包，验收后可删除。检查形象、透明边缘和循环后，关闭桌宠，将生成目录完整复制为`vpet/characters/dafeiyu-v1/video-smooth/`，并安装V5.15或更新的宿主。只在完整生成后才会写入`pack.json`。宿主有此目录时优先使用，否则继续播放原24帧动作包。移走`video-smooth`目录并重启桌宠即可回到原动作包。
+
+V5.16的准备工具会识别原片中固定周期的孤立重复帧，将其采样时间放在相同画面的中点，再沿原时间轴插值。连续静止不作为周期重复删去，保留实际休息时长。末尾0.3秒用于插值返回起始姿态，减轻原片首尾差距较大的循环突跳；原片的动作设计、遮挡和插帧形变仍有限制。编码关闭前瞻，避免部分旧版FFmpeg/libvpx丢失尾帧；每段完整解码读回实际帧数，通过后才登记时长。
 
 参数支持48或60帧及0.8—2倍速度，需重新生成整套视频；运行时不做实时补帧或变速。工具保留上游素材与RIFE的许可说明，不分发模型及工具二进制。
 

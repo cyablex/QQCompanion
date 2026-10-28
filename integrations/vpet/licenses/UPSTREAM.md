@@ -9,3 +9,5 @@ Optional animation resources are downloaded separately from [PC2005-cloud/dsh-pe
 FFmpeg is an external executable, not copied into this source distribution. The preparation tool can reuse an existing installation or accept an explicit path. Its own license/build terms continue to apply.
 
 `tools/prepare_pet_smooth.py` optionally processes those licensed animations with [nihui/rife-ncnn-vulkan](https://github.com/nihui/rife-ncnn-vulkan), release `20221029`, model `rife-v4.6`, through dual-matte interpolation and alpha reconstruction. The tool/model are not included or run during normal pet use. This is derivative frame interpolation, not original character animation. The external tool's MIT license is retained in `RIFE-MIT.txt` and copied into prepared packs.
+
+V5.16 preparation corrects isolated periodic duplicate samples on their original time axis, then allocates the final 0.3 seconds to an interpolated return to the starting pose. Encoder lookahead is disabled and decoded output frame counts are checked before manifest publication. These are derivative timing/loop edits to the same assets.

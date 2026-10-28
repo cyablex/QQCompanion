@@ -16,6 +16,21 @@ from song_offers import key as offer_key
 from store import TZ
 
 
+@pytest.fixture(autouse=True)
+def daytime_clock(monkeypatch):
+    # Assessing at noon must also deliver at noon. Otherwise these tests fail
+    # during real quiet hours, before reaching the drawing/invitation path.
+    moment = datetime.now(TZ).replace(hour=12, minute=0, second=0, microsecond=0)
+
+    class Daytime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment.astimezone(tz) if tz else moment.replace(tzinfo=None)
+
+    monkeypatch.setattr('engine.datetime', Daytime)
+    monkeypatch.setattr('store.time.time', lambda: moment.timestamp())
+
+
 @pytest.mark.asyncio
 async def test_invalid_proactive_output_retries_soon_without_sending_or_long_skip(setup, monkeypatch):
     store, cfg, engine, sent, prompts = setup
