@@ -13,7 +13,12 @@ public sealed partial class PetVisuals
     private readonly Dictionary<string, string> videos = new();
     private readonly Dictionary<string, int> videoFrames = new();
     private readonly HashSet<string> failedVideos = new();
-    private PetVideoPlayer? video;
+    private PetVideoPlayer? video, standby;
+    private BitmapSource? standbyFrame;
+    private string standbyName = "", decoderPath = "";
+    public int VideoFps { get; private set; } = 24;
+    public double AnimationSpeed { get; private set; } = 1;
+    public double RemainingVideo => video is null ? 0 : video.Duration - video.Position;
     private string videoKey = "", videoPose = "", videoFolder = "";
     private string headVideo = "head";
     private bool videoMirror;
@@ -22,12 +27,13 @@ public sealed partial class PetVisuals
     public int? VideoDecoderPid => video?.DecoderPid;
     public string VideoPose => videoPose;
     public bool AtVideoBoundary => !VideoReady || ReducedMotion || video!.Position < .13 || video.Duration - video.Position < .13;
-    public double ReactionDuration(string kind) => VideoReady ? 241d / 24 : 2;
+    public double PoseDuration(string pose) { string name = VideoName(pose); return VideoReady ? videoFrames[name] / (double)VideoFps : 2; }
+    public double ReactionDuration(string kind) => PoseDuration(kind);
     public event Action<string>? VideoFailed;
 
     private bool PrepareVideo(string folder)
     {
-        videoFolder = Path.Combine(folder, "video");
+        videoFolder = Path.Combine(folder, File.Exists(Path.Combine(folder, "video-smooth", "pack.json")) ? "video-smooth" : "video");
         string manifest = Path.Combine(videoFolder, "pack.json"), decoder = Path.Combine(videoFolder, "decoder.json");
         if (!File.Exists(manifest) || !File.Exists(decoder)) return false;
         try
@@ -49,17 +55,17 @@ public sealed partial class PetVisuals
                 if (videoFrames[key] <= 0) throw new IOException("动画帧数无效");
                 images[key] = Load(Path.Combine(videoFolder, poster));
             }
-            video = new PetVideoPlayer(executable, View.Dispatcher);
-            video.Frame += (bitmap, first) => { if (first) PresentVideo(bitmap, videoMirror, true); };
-            video.Failed += reason => {
-                failedVideos.Add(videoPose); videoKey = "";
-                if (images.TryGetValue(videoPose, out var poster)) PresentVideo(poster, videoMirror, false);
-                VideoFailed?.Invoke(reason);
-            };
+            VideoFps = info.RootElement.GetProperty("fps").GetInt32();
+            if (VideoFps is not (24 or 48 or 60)) throw new IOException("不支持的动画帧率");
+            AnimationSpeed = info.RootElement.TryGetProperty("speed", out var speed) ? speed.GetDouble() : 1;
+            if (!double.IsFinite(AnimationSpeed) || AnimationSpeed < .8 || AnimationSpeed > 2) throw new IOException("无效的动画速度");
+            decoderPath = executable;
+            video = NewPlayer();
             return true;
         }
         catch (Exception error) when (error is IOException or JsonException or KeyNotFoundException or InvalidOperationException)
         {
+            VideoFps = 24; AnimationSpeed = 1;
             images.Clear(); videos.Clear();
             string logs = Path.Combine(folder, "..", "..", "..", "logs");
             Directory.CreateDirectory(logs);
@@ -82,27 +88,68 @@ public sealed partial class PetVisuals
     {
         if (!VideoReady) return false;
         current = pose;
-        string name = pose.StartsWith("walk_") ? "walk" : pose switch {
-            "read" or "draw" => "write", "excited" => "body", "head" => headVideo, _ => pose
-        };
-        if (!videos.ContainsKey(name)) name = "idle";
+        string name = VideoName(pose);
         bool mirror = pose.StartsWith("walk_right");
         string key = name + (mirror ? ":right" : ":left");
         translate.Y = 0; rotate.Angle = 0;
         accents.Update(ReducedMotion ? "" : reaction, seconds - reactionAt);
         if (ReducedMotion || failedVideos.Contains(name))
         {
-            video!.Stop(); videoKey = "";
+            video!.Stop(); CancelPreload(); videoKey = "";
             if (!ReferenceEquals(front.Source, images[name])) PresentVideo(images[name], mirror, false);
             return true;
         }
         if (videoKey != key)
         {
             videoKey = key; videoPose = name; videoMirror = mirror;
-            video!.Play(videos[name], videoFrames[name]);
+            if (standbyName == name && standbyFrame is not null && standby is not null)
+            {
+                var old = video; video = standby; standby = null;
+                var frame = standbyFrame; standbyFrame = null; standbyName = "";
+                old?.Dispose(); PresentVideo(frame, mirror, true); video.Activate();
+            }
+            else
+            {
+                CancelPreload();
+                PresentVideo(images[name], mirror, true);
+                video!.Play(videos[name], videoFrames[name]);
+            }
         }
         return true;
     }
-    public void Suspend() { video?.Stop(); videoKey = ""; }
-    public void Dispose() { video?.Dispose(); video = null; }
+    private string VideoName(string pose)
+    {
+        string name = pose.StartsWith("walk_") ? "walk" : pose switch {
+            "read" or "draw" => "write", "excited" => "body", "head" => headVideo, _ => pose
+        };
+        return videos.ContainsKey(name) ? name : "idle";
+    }
+    private PetVideoPlayer NewPlayer()
+    {
+        var player = new PetVideoPlayer(decoderPath, View.Dispatcher, VideoFps);
+        player.Frame += (bitmap, first) => {
+            if (!first) return;
+            if (ReferenceEquals(player, video)) PresentVideo(bitmap, videoMirror, false);
+            else if (ReferenceEquals(player, standby)) standbyFrame = bitmap;
+        };
+        player.Failed += reason => {
+            if (ReferenceEquals(player, standby)) { CancelPreload(); return; }
+            if (!ReferenceEquals(player, video)) return;
+            failedVideos.Add(videoPose); videoKey = ""; CancelPreload();
+            if (images.TryGetValue(videoPose, out var poster)) PresentVideo(poster, videoMirror, false);
+            VideoFailed?.Invoke(reason);
+        };
+        return player;
+    }
+    public void Preload(string pose)
+    {
+        if (!VideoReady || ReducedMotion) return;
+        string name = VideoName(pose);
+        if (name == videoPose || name == standbyName || failedVideos.Contains(name)) return;
+        CancelPreload(); standbyName = name; standby = NewPlayer();
+        standby.Prepare(videos[name], videoFrames[name]);
+    }
+    public void CancelPreload() { var old = standby; standby = null; standbyFrame = null; standbyName = ""; old?.Dispose(); }
+    public void Suspend() { video?.Stop(); CancelPreload(); videoKey = ""; }
+    public void Dispose() { video?.Dispose(); video = null; CancelPreload(); }
 }

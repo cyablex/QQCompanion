@@ -11,7 +11,8 @@ namespace DafeiyuPet;
 
 public sealed class PetVideoPlayer : IDisposable
 {
-    public const int Width = 360, Height = 360, Fps = 24;
+    public const int Width = 360, Height = 360;
+    public int Fps { get; }
     private readonly string executable;
     private readonly Dispatcher dispatcher;
     private VideoDecoderJob? job;
@@ -20,15 +21,21 @@ public sealed class PetVideoPlayer : IDisposable
     private long generation;
     private bool disposed;
     private int loopFrames = 241;
+    private TaskCompletionSource<bool>? activation;
     public long Frames { get; private set; }
     public double Position => Frames % loopFrames / (double)Fps;
     public double Duration => loopFrames / (double)Fps;
     public int? DecoderPid { get { try { var active = process; return active is { HasExited: false } ? active.Id : null; } catch (InvalidOperationException) { return null; } } }
     public event Action<BitmapSource, bool>? Frame;
     public event Action<string>? Failed;
-    public PetVideoPlayer(string executable, Dispatcher dispatcher) { this.executable = executable; this.dispatcher = dispatcher; }
+    public PetVideoPlayer(string executable, Dispatcher dispatcher, int fps = 24) { this.executable = executable; this.dispatcher = dispatcher; Fps = fps; }
 
     public void Play(string file, int frames)
+        => Start(file, frames, false);
+    public void Prepare(string file, int frames)
+        => Start(file, frames, true);
+    public void Activate() => activation?.TrySetResult(true);
+    private void Start(string file, int frames, bool hold)
     {
         Stop(); if (disposed) return;
         Frames = 0;
@@ -36,6 +43,8 @@ public sealed class PetVideoPlayer : IDisposable
         var id = generation;
         cancellation = new();
         var token = cancellation.Token;
+        activation = hold ? new(TaskCreationOptions.RunContinuationsAsynchronously) : null;
+        var gate = activation?.Task;
         var start = new ProcessStartInfo(executable) {
             UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true
@@ -54,13 +63,14 @@ public sealed class PetVideoPlayer : IDisposable
                 try { decoder.Kill(); } catch (System.ComponentModel.Win32Exception) { }
                 throw new IOException("无法绑定动画解码进程");
             }
-            _ = Task.Run(() => Decode(decoder, playbackJob, id, token));
+            _ = Task.Run(() => Decode(decoder, playbackJob, id, token, gate));
         }
         catch (Exception error) { Stop(); decoder.Dispose(); Failed?.Invoke(error.GetType().Name); }
     }
 
-    private async Task Decode(Process decoder, VideoDecoderJob playbackJob, long id, CancellationToken token)
+    private async Task Decode(Process decoder, VideoDecoderJob playbackJob, long id, CancellationToken token, Task? gate)
     {
+        using var timing = new VideoTimerResolution();
         var errors = decoder.StandardError.ReadToEndAsync(token);
         try
         {
@@ -88,6 +98,7 @@ public sealed class PetVideoPlayer : IDisposable
                     bitmap.WritePixels(new Int32Rect(0, 0, Width, Height), pixels, Width * 4, 0);
                     Frames++; Frame?.Invoke(bitmap, first);
                 }, DispatcherPriority.Render, token);
+                if (Frames == 1 && gate is not null) { await gate.WaitAsync(token); clock.Restart(); next = 0; }
                 // A blocked desktop resumes smoothly instead of bursting old frames.
                 next = Math.Max(next + 1d / Fps, clock.Elapsed.TotalSeconds);
             }
@@ -117,4 +128,14 @@ public sealed class PetVideoPlayer : IDisposable
         previous?.Dispose();
     }
     public void Dispose() { if (disposed) return; disposed = true; Stop(); }
+}
+
+// Request finer timer granularity only while this decoder is alive. Every
+// acquisition is paired, including cancellation while a preloaded frame waits.
+internal sealed class VideoTimerResolution : IDisposable
+{
+    [System.Runtime.InteropServices.DllImport("winmm.dll")] private static extern uint timeBeginPeriod(uint period);
+    [System.Runtime.InteropServices.DllImport("winmm.dll")] private static extern uint timeEndPeriod(uint period);
+    private bool active = timeBeginPeriod(1) == 0;
+    public void Dispose() { if (active) { active = false; timeEndPeriod(1); } }
 }

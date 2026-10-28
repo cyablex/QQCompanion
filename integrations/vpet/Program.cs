@@ -160,7 +160,7 @@ public sealed class PetWindow : Window, IController
         resetSize.Click += (_, _) => sizeSlider.Value = 100;
         sizePanel.Children.Add(sizeLabel); sizePanel.Children.Add(sizeSlider); sizePanel.Children.Add(resetSize);
         menu.Items.Add(new MenuItem { Header = sizePanel, StaysOpenOnClick = true, Focusable = false });
-        AddMenu(menu, "关于当前形象", () => ShowBubble(visuals.VideoReady ? "蓝发女仆透明视频形象，14段连续动作，24帧/秒。和QQ共用人设与任务；日常动作不写日记，语音口型待补充。" : File.Exists(Path.Combine(root, "vpet", "characters", "dafeiyu-v1", "character.json"))
+        AddMenu(menu, "关于当前形象", () => ShowBubble(visuals.VideoReady ? $"蓝发女仆透明视频形象，14段连续动作，{visuals.VideoFps}帧/秒、约{visuals.AnimationSpeed:0.##}倍节奏。和QQ共用人设与任务；日常动作不写日记，语音口型待补充。" : File.Exists(Path.Combine(root, "vpet", "characters", "dafeiyu-v1", "character.json"))
             ? visuals.Ready ? "蓝发女仆高清形象；有读书、涂画、伸懒腰、休息和追饭动作。和 QQ 共用人设与记忆；日常姿态属于本地陪伴动作。" : "蓝发女仆基础动作，复用本机 QQ 表情；和 QQ 共用同一套人设与记忆。可准备本机高清姿态，语音口型待补充。"
             : "当前为 VPet 原作者演示素材；本机有女仆表情包时，可运行角色准备工具接入。"));
         AddMenu(menu, "退出桌宠", Quit);

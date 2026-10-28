@@ -15,6 +15,7 @@ The full license is in LICENSE. Third-party files retain their own licenses.
 | Seed-VC | https://github.com/Plachtaa/seed-vc | Installed separately; models and audio are not relicensed by this project |
 | Optional VPet Core host | https://github.com/LorisYounger/VPet | VPet-Simulator.Core 1.1.0.72 under Apache-2.0, installed separately from NuGet with its dependencies; demonstration animation assets follow the upstream's separate animation terms and are downloaded separately with source attribution |
 | Transparent video decoder reference | https://github.com/Bai-Cute/big-blue-fish-desktop-pet | Apache-2.0; adapted decoder/job-object files retain attribution and full license in integrations/vpet/licenses |
+| Optional offline animation interpolation | https://github.com/nihui/rife-ncnn-vulkan | MIT; full license in integrations/vpet/licenses/RIFE-MIT.txt; external binary/model not included |
 | Optional blue whale-maid videos | https://github.com/PC2005-cloud/dsh-pet | MIT, copyright (c) 2026 PC2005-cloud; selected assets downloaded separately at a pinned commit, with full license/source record retained beside them |
 | External video decoder | https://ffmpeg.org/ | Reuses an existing FFmpeg executable; no binary copied into public source, upstream build/license terms retained |
 
