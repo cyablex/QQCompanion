@@ -32,7 +32,7 @@ import vpet_runtime
 from song_previews import SongPreviews
 from song_voice import singing_voice
 
-VERSION = "V5.17"
+VERSION = "V5.18"
 TZ = timezone(timedelta(hours=8))
 FEATURES = (
     "proactive",
@@ -43,6 +43,7 @@ FEATURES = (
     "autonomous_drawing",
     "autonomous_profile",
     "autonomous_posts",
+    "post_requires_approval",
     "owner_public_sharing",
     "qzone",
     "image_understanding",
@@ -105,6 +106,33 @@ class DesktopAPI:
 
     def _attach_window(self, window):
         self._window = window
+
+    @result
+    def get_post_drafts(self):
+        from post_drafts import PostDrafts
+        with sqlite3.connect(ROOT / 'data/companion.sqlite3', isolation_level=None, timeout=5) as db:
+            db.row_factory = sqlite3.Row
+            rows = PostDrafts(db).rows(read_settings())
+        previews = []
+        for row in rows:
+            image = json.loads(row['payload']).get('image')
+            preview = ''
+            if image and Path(image['file']).is_file():
+                mime = 'image/jpeg' if Path(image['file']).suffix.lower() in {'.jpg', '.jpeg'} else 'image/png'
+                preview = f"data:{mime};base64," + base64.b64encode(Path(image['file']).read_bytes()).decode('ascii')
+            previews.append(dict(id=row['id'], content=row['content'], state=row['state'],
+                                 created=row['created'], expires=row['expires'], result=row['result'], image=preview))
+        return previews
+
+    @result
+    def decide_post_draft(self, token, approve, content):
+        from post_drafts import PostDrafts
+        if type(approve) is not bool:
+            raise ValueError('请选择批准或放弃。')
+        with self._lock, sqlite3.connect(ROOT / 'data/companion.sqlite3', isolation_level=None, timeout=5) as db:
+            db.row_factory = sqlite3.Row
+            message = PostDrafts(db).decide(read_settings(), str(token), approve, str(content))
+        return dict(message=message)
 
     @result
     def get_vpet_status(self):

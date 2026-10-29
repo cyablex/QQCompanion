@@ -100,7 +100,7 @@ async def test_queued_legacy_drawing_cannot_bypass_post_check_or_retry_on_restar
     Image.new("RGB", (10, 10)).save(image)
     row = dict(id="legacy", title="鲸尾指纹", caption=REPEAT, file=str(image), created=time.time())
     store.set(engine.sketchbook.key(cfg), [row])
-    assert await autopost.AutoPosts(plugin).run() == "duplicate_content"
+    assert await autopost.AutoPosts(plugin).run(force=True) == "duplicate_content"
     assert not writes and len(prompts) == 1
     engine.sketchbook = Sketchbook(store, engine.sketchbook.root)
     assert engine.sketchbook.pending_public(cfg) is None

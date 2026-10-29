@@ -66,6 +66,7 @@ def env(tmp_path, monkeypatch):
         image_understanding=True,
         voice_understanding=True,
         autonomous_posts=True,
+        post_requires_approval=False,
         post_image_probability=0,
     )
     store = Store(tmp_path / "test.sqlite3")
@@ -85,6 +86,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(media, "read_settings", lambda: cfg)
     monkeypatch.setattr(autopost, "read_settings", lambda: cfg)
     monkeypatch.setattr(autopost, "quiet", lambda now: False)
+    async def worthy(*args):
+        return dict(worthy=True, reason="这组测试单独验证发送协议")
+    monkeypatch.setattr(autopost.AutoPosts, "sharing_review", worthy)
     yield cfg, store, engine, plugin, calls, sent
     store.db.close()
 
@@ -210,7 +214,7 @@ async def test_favorites_verified_once_and_untrusted_id_removed(env, monkeypatch
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("uncertain", [False, True])
-async def test_own_post_two_per_day_image_payload_no_private_context(
+async def test_own_post_one_per_day_image_payload_no_private_context(
     env, tmp_path, uncertain
 ):
     cfg, store, engine, plugin, calls, sent = env
@@ -259,14 +263,9 @@ async def test_own_post_two_per_day_image_payload_no_private_context(
             await poster.run()
     else:
         assert await poster.run() == "unknown"  # receipt alone is not readback
-    assert await poster.run() == "waiting"
-    if uncertain:
-        with pytest.raises(TimeoutError):
-            await poster.run(force=True)
-    else:
-        assert await poster.run(force=True) == "unknown"
+    assert await poster.run() == "already_processed_today"
     assert await poster.run(force=True) == "already_processed_today"
-    assert len(post_calls) == 2 and len(calls) == 2
+    assert len(post_calls) == 1 and len(calls) == 1
     assert "PRIVATE" not in str(calls)
     assert post_calls[0][1]["ugc_right"] == 4
     assert post_calls[0][1]["images"] == [image.as_uri()]
@@ -439,36 +438,23 @@ async def test_standalone_sticker_is_not_swallowed_when_same_sticker_was_recent(
 
 
 @pytest.mark.asyncio
-async def test_legacy_first_post_counts_and_second_slot_is_separate(env, monkeypatch):
+async def test_legacy_first_post_prevents_another_post_today(env, monkeypatch):
     cfg, store, engine, plugin, calls, sent = env
     poster = autopost.AutoPosts(plugin)
     day = autopost.datetime.now(autopost.TZ).strftime("%Y-%m-%d")
     first = f"qzone_post:{cfg['bot_qq']}:{day}"
     store.action(first, f"qzone:{cfg['bot_qq']}", "qzone_post", ["old"])
     store.outcome(first, "succeeded")
-    assert poster.next_slot(cfg, day)[0] == first + ":2"
-    # Today's old assessment must not consume the second slot's assessment.
-    store.set(
-        f"qzone_post_attempt:{cfg['bot_qq']}:{day}",
-        dict(count=1, last=autopost.time.time()),
-    )
-    store.db.execute("UPDATE actions SET created=created-7201 WHERE id=?", (first,))
-
-    async def skip(*args, **kwargs):
-        return dict(action="skip", messages=[])
-
-    engine.decision = skip
-    assert await poster.run() == "no_content"
-    assert store.get(f"qzone_post_attempt:{cfg['bot_qq']}:{day}:2")["count"] == 1
+    assert poster.next_slot(cfg, day)[0] is None
+    assert await poster.run(force=True) == "already_processed_today"
 
 
 @pytest.mark.asyncio
 async def test_duplicate_post_content_is_not_sent_again(env):
     cfg, store, engine, plugin, calls, sent = env
     poster = autopost.AutoPosts(plugin)
-    day = autopost.datetime.now(autopost.TZ).strftime("%Y-%m-%d")
     store.action(
-        f"qzone_post:{cfg['bot_qq']}:{day}",
+        f"qzone_post:{cfg['bot_qq']}:previous-day",
         f"qzone:{cfg['bot_qq']}",
         "qzone_post",
         ["白米饭像云朵。\n\n配图来源：https://example.org"],
@@ -521,5 +507,5 @@ async def test_concurrent_posters_cannot_publish_same_content_twice(env, monkeyp
     )
     poster = autopost.AutoPosts(plugin)
     result = await asyncio.gather(poster.run(force=True), poster.run(force=True))
-    assert sorted(result) == ["slot_claimed", "succeeded"]
+    assert sorted(result) == ["already_processed_today", "succeeded"]
     assert len(sends) == 1

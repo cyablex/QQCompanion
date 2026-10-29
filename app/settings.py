@@ -79,6 +79,7 @@ def read_settings():
         "game_mode_auto": False,
         "send_memes": False,
         "autonomous_posts": False,
+        "post_requires_approval": True,
         "owner_public_sharing": False,
         "post_image_probability": 0.35,
         "offline_recovery": False,

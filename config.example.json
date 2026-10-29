@@ -16,6 +16,7 @@
   "autonomous_drawing": false,
   "autonomous_profile": false,
   "autonomous_posts": false,
+  "post_requires_approval": true,
   "proactive": false,
   "friend_proactive": false,
   "qzone": false,

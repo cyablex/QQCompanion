@@ -92,7 +92,7 @@ async def test_publication_uses_reviewed_owner_image_and_forget_cancels_it(shari
 
     store, cfg, feature, source, response, prompts, reviewer = sharing
     cfg.update(name="大肥鱼", persona="开朗", owner_title="主人", live=True, paused=False,
-               guests=False, revision=1, autonomous_posts=True, autonomous_drawing=False,
+               guests=False, revision=1, autonomous_posts=True, post_requires_approval=False, autonomous_drawing=False,
                daily_calls=1000, daily_cny=3, monthly_cny=60)
     feature.stage_image(cfg, "11111", "owner-image", image_data())
     writes=[]
@@ -116,6 +116,9 @@ async def test_publication_uses_reviewed_owner_image_and_forget_cancels_it(shari
     monkeypatch.setattr(autopost, "read_settings", lambda: dict(cfg))
     monkeypatch.setattr(autopost, "quiet", lambda now: False)
     monkeypatch.setitem(sys.modules, "qzone_vendor.core.qzone", SimpleNamespace(QzoneParser=SimpleNamespace(parse_feeds=lambda items: items)))
+    async def worthy(*args):
+        return dict(worthy=True, reason="单独验证分享授权")
+    monkeypatch.setattr(autopost.AutoPosts, "sharing_review", worthy)
     status=await autopost.AutoPosts(plugin).run()
     if forget_during_generation:
         assert status == "cancelled" and not writes

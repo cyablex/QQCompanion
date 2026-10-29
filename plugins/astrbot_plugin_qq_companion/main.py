@@ -439,6 +439,12 @@ class QQCompanion(Star):
         text, attachments = MediaPipeline.describe_input(raw, text)
         if not text and not attachments:
             return
+        if contact == cfg['owner_qq'] and (text in {'/待发动态', '/动态草稿'}
+                or text.startswith(('/同意动态 ', '/拒绝动态 '))):
+            draft_reply = self.autopost.draft_command(contact, text, source_time=raw.get('time') or time.time())
+            if draft_reply is not None:
+                await self.send_private(contact, draft_reply)
+                return
         if contact == cfg["owner_qq"] and text in {"/发说说", "/说说状态", "/表情库"}:
             if text == "/表情库":
                 answer = "已收集鲸鱼娘表情：" + "、".join(
@@ -457,7 +463,7 @@ class QQCompanion(Star):
                     answer = (
                         "本次说说检查结果："
                         + status
-                        + "；每天最多两条，自动发布间隔至少两小时，发送状态不确定时不会重发该条。"
+                        + "；自动评估最多每48小时一次，没有好内容就跳过；默认先存草稿，/待发动态 查看后批准。"
                     )
                 except Exception as exc:
                     self.store.set("last_error", type(exc).__name__)
@@ -681,6 +687,11 @@ class QQCompanion(Star):
                         except Exception as exc:
                             self.store.set("last_autopost_error", type(exc).__name__)
                     await self.social.comments.resume()
+                    try:
+                        await self.autopost.resume()
+                        await self.autopost.notify_drafts()
+                    except Exception as exc:
+                        self.store.set('last_autopost_error', type(exc).__name__)
                     await self.social.notify_approvals()
                     for contact in self.reply_queue.ready():
                         if contact not in self.workers:

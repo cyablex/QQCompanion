@@ -10,6 +10,25 @@ const guestIds = ref('')
 const loading = ref(false)
 const previewBusy = ref(false)
 let previewAudio: HTMLAudioElement | null = null
+interface PostDraft { id: string; content: string; image: string; state: string; result: string }
+const postDrafts = ref<PostDraft[]>([])
+const draftBusy = ref(false)
+const draftLabels: Record<string, string> = { pending: '待确认', approved: '已批准，等待发布', sending: '正在核对', succeeded: '已发布并读回', unknown: '结果待核对', rejected: '已放弃', expired: '已过期', cancelled: '已取消' }
+async function loadDrafts() {
+  if (!connected.value) return
+  try { postDrafts.value = await call<PostDraft[]>('get_post_drafts') }
+  catch (e) { error.value = (e as Error).message }
+}
+async function decideDraft(draft: PostDraft, approve: boolean) {
+  draftBusy.value = true
+  try {
+    const result = await call<{ message: string }>('decide_post_draft', draft.id, approve, draft.content)
+    notify(result.message)
+    await loadDrafts()
+  } catch (e) { error.value = (e as Error).message }
+  finally { draftBusy.value = false }
+}
+watch(connected, value => { if (value) void loadDrafts() }, { immediate: true })
 onUnmounted(() => previewAudio?.pause())
 async function preview(style: string) {
   previewBusy.value = true
@@ -30,7 +49,8 @@ const features = [
   ['autonomous_drawing', '随心画画', '有灵感时创作几何简笔画'],
   ['autonomous_profile', '自主签名', '按已有长期节奏决定是否换签名'],
   ['owner_public_sharing', '分享主人趣事', '只选不涉及隐私的趣事与图片，其他好友私聊不公开'],
-  ['autonomous_posts', '自主发动态', '有新内容时，按原额度与节奏发布'],
+  ['autonomous_posts', '自主动态', '最多每48小时评估一次；有具体趣味才拟稿，可以连续多天不发'],
+  ['post_requires_approval', '动态发布前确认', '默认先存草稿，等你批准；关闭后仍受48小时节奏与内容审核限制'],
   ['qzone', '空间互动', '好友空间上午、晚间各一次；自己空间的评论每半小时检查，好友评论仍需审批'],
   ['image_understanding', '看懂图片', '理解私聊中的图片与表情包'],
   ['voice_understanding', '听懂语音', '通过本地转写理解收到的语音'],
@@ -59,6 +79,17 @@ watch(connected, value => { if (value) void load() }, { immediate: true })
 </script>
 <template>
   <div class="page-heading"><div><span class="eyebrow">MAKE IT YOURS</span><h1>按喜欢的方式相处。</h1><p>保留熟悉的记忆，调整接下来的日常。</p></div><button class="button quiet" :disabled="!connected || busy || loading" @click="load">重新加载</button></div>
+  <section class="card form-card">
+    <div class="form-section-heading"><div><h2>待发动态</h2><p>有好内容才留下草稿，默认经你确认再发。草稿保留72小时；没有内容就不用发。</p></div><button class="button quiet" type="button" :disabled="draftBusy || !connected" @click="loadDrafts">刷新草稿</button></div>
+    <p v-if="!postDrafts.length" class="muted">暂无动态草稿。安静几天也没关系。</p>
+    <article v-for="draft in postDrafts" :key="draft.id" class="post-draft">
+      <strong>{{ draftLabels[draft.state] || draft.state }} · {{ draft.id }}</strong>
+      <p style="white-space: pre-wrap">{{ draft.content }}</p>
+      <img v-if="draft.image" :src="draft.image" alt="拟发布的动态配图" style="max-width: 100%; max-height: 280px; object-fit: contain" />
+      <p class="input-hint">{{ draft.result }}</p>
+      <div v-if="['pending', 'approved'].includes(draft.state)" class="actions"><button v-if="draft.state === 'pending'" type="button" class="button primary" :disabled="draftBusy" @click="decideDraft(draft, true)">批准发布这条</button><button type="button" class="button quiet" :disabled="draftBusy" @click="decideDraft(draft, false)">这条不发</button></div>
+    </article>
+  </section>
   <form v-if="values" @submit.prevent="save">
     <section class="card form-card"><div class="form-section-heading"><span class="section-number">01</span><div><h2>名字与性格</h2><p>人设修改在后续生成时生效，不会清除聊天记忆。</p></div></div><div class="form-grid"><label>她的名字<input v-model="values.name" maxlength="40" required /></label><label>对你的称呼<input v-model="values.owner_title" maxlength="40" required /></label><label class="full-width">性格与说话方式<textarea v-model="values.persona" rows="6" maxlength="4000" /><span class="input-hint">可以描述语气、习惯，以及你希望她如何与你相处。</span></label></div></section>
     <section class="card form-card"><div class="form-section-heading"><span class="section-number">02</span><div><h2>聊天与日常</h2><p>这些开关控制是否参与，已有频率与发送边界保持原规则。</p></div></div><div class="features-grid"><div v-for="[key, label, hint] in features" :key="key" class="feature-row"><div><strong>{{ label }}</strong><p>{{ hint }}</p></div><ToggleSwitch :model-value="!!values[key]" :label="label"  @update:model-value="values![key] = $event" /></div></div></section>
@@ -69,3 +100,9 @@ watch(connected, value => { if (value) void load() }, { immediate: true })
   </form>
   <section v-else class="card empty-state"><h2>{{ loading ? '正在读取本机设置…' : '等待连接本机控制台' }}</h2><p>请通过桌面入口打开，设置会从现有安装中读取。</p></section>
 </template>
+
+<style scoped>
+.post-draft { padding: 18px 0; border-top: 1px solid var(--line); }
+.post-draft > p { margin: 12px 0; line-height: 1.8; }
+.post-draft .actions { display: flex; gap: 10px; }
+</style>

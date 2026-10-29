@@ -22,13 +22,20 @@ def social_action_context(store, cfg, contact):
         "SELECT approval,state,result FROM qzone_authorizations WHERE owner=? AND bot=? ORDER BY source_time DESC LIMIT 6",
         (cfg["owner_qq"], cfg["bot_qq"]),
     )]
+    # The draft table is created by the posting workflow on existing installs.
+    drafts = []
+    if store.db.execute("SELECT 1 FROM sqlite_master WHERE name='qzone_post_drafts'").fetchone():
+        drafts = [dict(row) for row in store.db.execute(
+            "SELECT id,state,content,result FROM qzone_post_drafts WHERE owner=? AND bot=? ORDER BY created DESC LIMIT 3",
+            (cfg['owner_qq'], cfg['bot_qq']))]
     return (
         "\n【空间动作的实际执行状态，仅供给主人解释】pending是草稿待同意，approved仍不是已发送，"
         "unknown不能说成功。评论succeeded且有readback才是确认已发；点赞也要有readback才能说实际已点。"
         "普通聊天的承诺不能执行空间动作，不能说‘这就发’或‘已经发了’来代替执行。"
         "queued表示明确批准已保存、会在条件恢复后自动继续；unknown只读回核对，不盲重发。"
         "用户要改稿时说明仍需确认；已批准但未确认的动作按实际状态解释，不编造正在排队。\n"
-        + json.dumps(dict(approvals=pending, authorizations=approvals, actions=actions), ensure_ascii=False)
+        + '自己的动态草稿另用 /待发动态 查看、/同意动态 编号 或 /拒绝动态 编号；pending尚未发布。'
+        + json.dumps(dict(approvals=pending, authorizations=approvals, actions=actions, post_drafts=drafts), ensure_ascii=False)
     )
 
 
