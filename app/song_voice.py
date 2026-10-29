@@ -8,7 +8,7 @@ from settings import ROOT
 
 
 def singing_voice(cfg, root=ROOT):
-    mode = cfg.get("singing_pitch_mode", "reference_octave")
+    mode = cfg.get("singing_pitch_mode", "preserve")
     shift = cfg.get("singing_pitch_shift", 0)
     if mode not in {"reference_octave", "preserve"} or type(shift) is not int or not -12 <= shift <= 12:
         raise ValueError("歌声音高参数无效。")
@@ -16,7 +16,8 @@ def singing_voice(cfg, root=ROOT):
     if not reference:
         presets = Path(root).parent / "GPTSoVITS/reference/yui/presets.json"
         profiles = json.loads(presets.read_text(encoding="utf-8"))["profiles"]
-        reference = next(p["ref_audio_path"] for p in profiles if p["id"] == cfg.get("voice_style", "everyday"))
+        profile = next(p for p in profiles if p["id"] == cfg.get("voice_style", "everyday"))
+        reference = profile.get("singing_ref_audio_path") or profile["ref_audio_path"]
     path = Path(reference).resolve()
     if not path.is_file() or path.suffix.lower() != ".wav":
         raise ValueError("请选择可读取的 WAV 参考音色。")

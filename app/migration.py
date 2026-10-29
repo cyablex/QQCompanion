@@ -419,7 +419,8 @@ def restore_save(backup, target, password):
                 )
                 write_json(artifact, record)
         presets = unpacked / "voice/reference/yui/presets.json"
-        for artifact in (unpacked / 'main/data/songbook/previews').glob('*/*/*.json'):
+        songbook = unpacked / 'main/data/songbook'
+        for artifact in [*songbook.joinpath('previews').glob('*/*/*.json'), *songbook.joinpath('audio').glob('*.json')]:
             record = read_json(artifact)
             if not isinstance(record, dict):
                 continue
@@ -430,16 +431,14 @@ def restore_save(backup, target, password):
                     for key in ('reference', 'singing_reference'):
                         if isinstance(record[field].get(key), str):
                             record[field][key] = relocate_path(record[field][key], manifest['source_root'], target)
+                            record[field][key] = relocate_path(record[field][key], manifest['source_voice_root'], voice_target)
             write_json(artifact, record)
         if presets.is_file():
             values = read_json(presets)
             for profile in values.get("profiles", []):
-                if isinstance(profile.get("ref_audio_path"), str):
-                    profile["ref_audio_path"] = relocate_path(
-                        profile["ref_audio_path"],
-                        manifest["source_voice_root"],
-                        voice_target,
-                    )
+                for field in ('ref_audio_path', 'singing_ref_audio_path'):
+                    if isinstance(profile.get(field), str):
+                        profile[field] = relocate_path(profile[field], manifest['source_voice_root'], voice_target)
             # Audition output paths describe the old machine, not references.
             values.pop("results", None)
             write_json(presets, values)

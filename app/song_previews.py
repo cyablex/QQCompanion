@@ -55,7 +55,7 @@ class SongPreviews:
                              shift=job.get('voice_options', {}).get('singing_pitch_shift', 0)))
         return sorted(rows, key=lambda r: r['created'], reverse=True)
 
-    def create(self, song_id, cfg, mode='reference_octave', shift=0):
+    def create(self, song_id, cfg, mode='preserve', shift=0):
         song = self.library.get(song_id)
         if not song or song['state'] != 'ready' or not self.library.allowed_file(song_id, song['file']):
             raise ValueError('请先选择已有成品的歌曲。')
@@ -106,6 +106,9 @@ class SongPreviews:
         old_master = Path(song['file']).with_suffix('.flac')
         if old_master.is_file():
             shutil.copy2(old_master, archive / 'song.flac')
+        old_info = Path(song['file']).with_suffix('.json')
+        if old_info.is_file():
+            shutil.copy2(old_info, archive / 'song.json')
         atomic_json(archive / 'job.json', dict(label='替换前的成品', created=time.time()))
         atomic_json(archive / 'result.json', dict(state='ready', file=str(old.resolve()), duration=song['duration']))
         destination = self.library.audio_path(song_id)
@@ -118,6 +121,10 @@ class SongPreviews:
             os.replace(destination.with_suffix('.new.flac'), destination.with_suffix('.flac'))
         else:
             destination.with_suffix('.flac').unlink(missing_ok=True)
+        if source.with_suffix('.json').is_file():
+            shutil.copy2(source.with_suffix('.json'), destination.with_suffix('.json'))
+        else:
+            destination.with_suffix('.json').unlink(missing_ok=True)
         self.db.execute("UPDATE songs SET state='ready',duration=?,bytes=?,progress='已采用调整试听',updated=? WHERE id=?",
                         (result['duration'], destination.stat().st_size, time.time(), song_id))
         return dict(adopted=version, previous=old_version)

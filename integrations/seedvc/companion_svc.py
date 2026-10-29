@@ -20,7 +20,7 @@ def main():
     parser.add_argument("--steps", type=int, choices=range(10, 61), default=50)
     parser.add_argument('--cfg-rate', type=float, default=0.9, help='Seed-VC参考引导强度，0到1')
     parser.add_argument("--shift", type=int, choices=range(-12, 13), default=0)
-    parser.add_argument("--pitch-mode", choices=("reference_octave", "preserve"), default="reference_octave")
+    parser.add_argument("--pitch-mode", choices=("reference_octave", "preserve"), default="preserve")
     args = parser.parse_args()
     if not math.isfinite(args.cfg_rate) or not 0 <= args.cfg_rate <= 1:
         parser.error('参考引导强度必须在0到1之间')
@@ -43,33 +43,54 @@ def main():
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     os.environ.setdefault("NUMBA_CACHE_DIR", str(ROOT / "cache/numba"))
     import inference
-    if args.pitch_mode == "reference_octave":
-        import numpy as np
-        from pitch_policy import reference_register
+    # Preserve native bins within the supported range; prevent high F0 from
+    # wrapping to zero in the installed Seed-VC quantizer.
+    from modules import length_regulator
+    from pitch_policy import install_pitch_guard
+    install_pitch_guard(length_regulator)
+    write_audio = inference.sf.write
 
-        load_models = inference.load_models
+    def write_master(*args, **kwargs):
+        kwargs['subtype'] = 'PCM_24'
+        return write_audio(*args, **kwargs)
 
-        def load_with_register(options):
-            models = list(load_models(options))
-            extract = models[2]
-            reference = None
+    inference.sf = SimpleNamespace(write=write_master)
+    import numpy as np
+    from statistics import median
+    from pitch_policy import reference_register
 
-            def pitch(audio, **kwargs):
-                nonlocal reference
-                result = extract(audio, **kwargs)
-                # Seed-VC extracts target/reference first, then the source vocals.
-                if reference is None:
-                    reference = result
-                    return result
+    load_models = inference.load_models
+
+    def load_with_pitch_report(options):
+        models = list(load_models(options))
+        extract = models[2]
+        reference = None
+
+        def pitch(audio, **kwargs):
+            nonlocal reference
+            result = extract(audio, **kwargs)
+            if reference is None:
+                reference = result
+                return result
+            if args.pitch_mode == 'reference_octave':
                 adjusted, report = reference_register(result, reference)
-                args.output.mkdir(parents=True, exist_ok=True)
-                (args.output / "pitch.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-                return np.asarray(adjusted, dtype=result.dtype)
+            else:
+                adjusted = result
+                report = dict(mode='preserve', semitones=0)
+            voiced = [float(v) for v in adjusted if math.isfinite(float(v)) and v > 50]
+            shifted = [v * 2 ** (args.shift / 12) for v in voiced]
+            report.update(manual_semitones=args.shift, model_max_hz=1100,
+                requested_max_hz=round(max(shifted, default=0), 2),
+                requested_median_hz=round(median(shifted), 2) if shifted else 0,
+                above_model_range_frames=sum(v > 1100 for v in shifted), output_pcm_bits=24)
+            args.output.mkdir(parents=True, exist_ok=True)
+            (args.output / 'pitch.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+            return np.asarray(adjusted, dtype=result.dtype)
 
-            models[2] = pitch
-            return tuple(models)
+        models[2] = pitch
+        return tuple(models)
 
-        inference.load_models = load_with_register
+    inference.load_models = load_with_pitch_report
 
     inference.main(SimpleNamespace(source=str(args.source.resolve()), target=str(args.target.resolve()),
                             output=str(args.output.resolve()), diffusion_steps=args.steps,

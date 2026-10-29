@@ -119,7 +119,7 @@ class SongWorker:
         gc.collect()
         torch.cuda.empty_cache()
 
-    def mix(self, converted):
+    def mix(self, converted, shift=0):
         import numpy as np
         import soundfile as sf
 
@@ -128,6 +128,11 @@ class SongWorker:
         backing, backing_rate = sf.read(str(self.work / "backing.wav"), dtype="float32", always_2d=True)
         if rate != backing_rate:
             raise ValueError("转换后音频采样率不一致。")
+        # A semitone change must move accompaniment into the same key. Automatic
+        # octave selection preserves pitch class and does not retune the band.
+        if shift:
+            import librosa
+            backing = librosa.effects.pitch_shift(backing.T, sr=rate, n_steps=shift).T
         gain = float(np.sqrt(np.mean(source ** 2)) / max(float(np.sqrt(np.mean(voice ** 2))), 1e-6))
         gain = min(3.0, max(0.2, gain))
         count = max(len(voice), len(backing))
@@ -171,15 +176,20 @@ class SongWorker:
             if len(converted) != 1:
                 raise RuntimeError("没有得到完整歌声，不能收录。")
             self.progress("混合伴奏并保存成品")
-            duration = self.mix(converted[0])
+            duration = self.mix(converted[0], shift=voice['shift'])
             if abs(duration - source["duration"]) > 5 or self.output.stat().st_size < 10000 or self.cancelled():
                 raise ValueError("歌曲未完整生成或任务已取消，没有收录。")
+            pitch_file = self.work / 'converted/pitch.json'
+            pitch = json.loads(pitch_file.read_text(encoding='utf-8')) if pitch_file.exists() else {}
+            atomic_json(self.output.with_suffix('.json'), dict(voice=voice, pitch=pitch,
+                        source_url=source['url'], duration=duration))
             atomic_json(self.work / "result.json", dict(state="ready", file=str(self.output), duration=duration,
                         bytes=self.output.stat().st_size, source_url=source["url"], source_title=source["title"], voice=voice))
             self.progress("已准备好")
         except Exception as exc:
             self.output.unlink(missing_ok=True)
             self.output.with_suffix('.flac').unlink(missing_ok=True)
+            self.output.with_suffix('.json').unlink(missing_ok=True)
             safe_error = (str(exc)[:300] if isinstance(exc, (ValueError, InterruptedError, TimeoutError))
                           else "本机没能完成这首歌的制作，请稍后再试或换一个音源。")
             state = ("paused" if isinstance(exc, InterruptedError) else "retry" if isinstance(exc, SourceTemporary)

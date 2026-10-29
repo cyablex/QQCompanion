@@ -15,6 +15,12 @@ def reference_register(source, reference, frame_seconds=0.01):
     # A speaking reference is not a ceiling for sung notes. Never fold a high
     # chorus down, and never choose different octaves for adjacent phrases.
     octave = 1 if source_hz and target_hz / source_hz > 1.5 else 0
+    # Do not push real high notes beyond the singing model's 1100 Hz F0 bins.
+    # Keep one interval-preserving decision for the entire song.
+    high_hz = max((values[i] for i in voiced), default=0)
+    limited = bool(octave and high_hz * 2 > 1100)
+    if limited:
+        octave = 0
     for i in voiced:
         values[i] *= 2 ** octave
     groups = []
@@ -30,4 +36,15 @@ def reference_register(source, reference, frame_seconds=0.01):
                             end=round((group[-1] + 1) * frame_seconds, 2),
                             source_hz=round(hz, 2), semitones=12 * octave))
     return values, dict(mode="reference_octave", policy='whole_song_up_only', reference_hz=round(target_hz, 2),
-                        source_hz=round(source_hz, 2), semitones=12 * octave, phrases=phrases)
+                        source_hz=round(source_hz, 2), semitones=12 * octave, phrases=phrases,
+                        high_hz=round(high_hz, 2), limited_by_model_range=limited)
+
+
+def install_pitch_guard(regulator):
+    """Avoid upstream out-of-range F0 bins wrapping to the unvoiced bin."""
+    original = regulator.f0_to_coarse
+
+    def bounded(f0, bins):
+        return original(f0.clamp(min=0, max=1100.0), bins)
+
+    regulator.f0_to_coarse = bounded

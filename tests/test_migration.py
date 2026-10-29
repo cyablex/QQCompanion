@@ -83,7 +83,7 @@ def personal(tmp_path):
     write_json(
         voice / "presets.json",
         dict(
-            profiles=[dict(ref_audio_path=str(voice / "everyday.wav"))],
+            profiles=[dict(ref_audio_path=str(voice / "everyday.wav"), singing_ref_audio_path=str(voice / 'everyday.wav'))],
             results=[dict(file="old-audition")],
         ),
     )
@@ -102,6 +102,8 @@ def test_creative_records_and_preview_voice_paths_survive_restore(personal, tmp_
     (folder / 'song.mp3').write_bytes(b'preview-audio')
     write_json(folder / 'result.json', dict(state='ready', file=str(folder / 'song.mp3'), voice=dict(reference=str(reference))))
     write_json(folder / 'job.json', dict(voice_options=dict(singing_reference=str(reference))))
+    info = personal / 'data/songbook/audio' / ('b' * 32 + '.json')
+    write_json(info, dict(voice=dict(reference=str(personal.parent / 'GPTSoVITS/reference/yui/everyday.wav'))))
     with sqlite3.connect(personal / 'data/companion.sqlite3') as db:
         db.execute('INSERT INTO state VALUES(?,?)', ('creative:67890:12345:project', json.dumps(dict(next_step='先听前30秒'))))
     backup = tmp_path / 'creative.dfysave'
@@ -114,6 +116,9 @@ def test_creative_records_and_preview_voice_paths_survive_restore(personal, tmp_
     assert result['file'] == str(restored / 'song.mp3')
     assert Path(result['voice']['reference']).is_file()
     assert Path(read_json(restored / 'job.json')['voice_options']['singing_reference']).is_file()
+    expected = str(target.parent / 'GPTSoVITS/reference/yui/everyday.wav')
+    assert read_json(target / info.relative_to(personal))['voice']['reference'] == expected
+    assert read_json(target.parent / 'GPTSoVITS/reference/yui/presets.json')['profiles'][0]['singing_ref_audio_path'] == expected
     with sqlite3.connect(target / 'data/companion.sqlite3') as db:
         record = json.loads(db.execute("SELECT value FROM state WHERE key='creative:67890:12345:project'").fetchone()[0])
         assert record['next_step'] == '先听前30秒'

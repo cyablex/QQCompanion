@@ -84,12 +84,16 @@ def test_adopting_preview_keeps_previous_finished_audio(room):
     folder.mkdir(parents=True)
     new = folder / 'song.mp3'
     new.write_bytes(b'new-finished-audio')
+    target.with_suffix('.json').write_text('{"voice":"previous"}')
+    new.with_suffix('.json').write_text('{"voice":"new"}')
     (folder / 'job.json').write_text(json.dumps(dict(label='调整版')), encoding='utf-8')
     (folder / 'result.json').write_text(json.dumps(dict(state='ready', file=str(new.resolve()), duration=60)), encoding='utf-8')
     saved = previews.adopt(song['id'], version)
     assert target.read_bytes() == b'new-finished-audio'
     old, _ = previews.ready_file(song['id'], saved['previous'])
     assert old.read_bytes() == b'original-finished-audio'
+    assert json.loads(old.with_suffix('.json').read_text())['voice'] == 'previous'
+    assert json.loads(target.with_suffix('.json').read_text())['voice'] == 'new'
     assert len(previews.list(song['id'])) == 2
     with pytest.raises(ValueError):
         previews.ready_file(song['id'], '../outside')

@@ -116,4 +116,5 @@ class SongLibrary:
         # Only the generated catalogue file is removed; source files are untouched.
         self.audio_path(song_id).unlink(missing_ok=True)
         self.audio_path(song_id).with_suffix('.flac').unlink(missing_ok=True)
+        self.audio_path(song_id).with_suffix('.json').unlink(missing_ok=True)
         return True

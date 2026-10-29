@@ -427,7 +427,10 @@ def test_installed_singing_models_use_cache_before_network(tmp_path, monkeypatch
         converted.append(args)
 
     monkeypatch.syspath_prepend(str(path.parent))
-    monkeypatch.setitem(sys.modules, "inference", SimpleNamespace(main=convert, load_models=lambda args: ()))
+    monkeypatch.setitem(sys.modules, "inference", SimpleNamespace(main=convert, load_models=lambda args: (),
+                        sf=SimpleNamespace(write=lambda *args, **kwargs: None)))
+    monkeypatch.setitem(sys.modules, 'modules', SimpleNamespace(
+        length_regulator=SimpleNamespace(f0_to_coarse=lambda f0, bins: f0)))
     module.main()
     assert len(converted) == 1
     assert converted[0].f0_condition and converted[0].diffusion_steps == 50

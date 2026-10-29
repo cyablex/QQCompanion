@@ -32,7 +32,7 @@ import vpet_runtime
 from song_previews import SongPreviews
 from song_voice import singing_voice
 
-VERSION = "V5.18"
+VERSION = "V5.19"
 TZ = timezone(timedelta(hours=8))
 FEATURES = (
     "proactive",
@@ -331,7 +331,7 @@ class DesktopAPI:
     def get_singing_settings(self):
         cfg = read_settings()
         voice = singing_voice(cfg, ROOT)
-        return dict(label=Path(voice['reference']).name if cfg.get('singing_reference') else '跟随当前说话音色',
+        return dict(label=Path(voice['reference']).name if cfg.get('singing_reference') else '跟随当前音色',
                     mode=voice['pitch_mode'], shift=voice['shift'])
 
     @result
