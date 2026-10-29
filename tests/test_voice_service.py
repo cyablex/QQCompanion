@@ -83,7 +83,7 @@ async def test_ready_voice_remains_loaded_for_day_without_rewarming(shared, monk
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["game_mode", "live", "voice_replies"])
-async def test_disabled_or_paused_settings_release_and_resume_warms_again(shared, change):
+async def test_disabled_settings_release_and_resume_warms_again(shared, change):
     service, voice, cfg, root, released = shared
     await service.tick()
     await service.task
@@ -98,6 +98,31 @@ async def test_disabled_or_paused_settings_release_and_resume_warms_again(shared
     await service.tick()
     assert voice.warmed and voice.calls == 2
     await service.release()
+
+
+@pytest.mark.asyncio
+async def test_game_exit_waits_for_new_voice_demand_even_after_service_restart(shared):
+    service, voice, cfg, root, released = shared
+    await service.tick()
+    await service.task
+    await service.tick()
+    cfg.update(game_mode=True, voice_lazy=True, voice_demand_after=time.time())
+    await service.tick()
+    assert not voice.warmed and released
+    (root / 'data/voice-demand.json').write_text(json.dumps(dict(requested=cfg['voice_demand_after'] - 1)))
+    cfg['game_mode'] = False
+    for _ in range(3):
+        await service.tick()
+    assert service.state == 'idle' and voice.calls == 1 and service.task is None
+    restarted = VoiceService(voice, lambda: cfg)
+    await restarted.tick()
+    assert restarted.state == 'idle' and voice.calls == 1
+    (root / 'data/voice-demand.json').write_text(json.dumps(dict(requested=time.time())))
+    await restarted.tick()
+    await restarted.task
+    await restarted.tick()
+    assert restarted.state == 'ready' and voice.calls == 2
+    await restarted.release()
 
 
 @pytest.mark.asyncio
@@ -192,6 +217,25 @@ async def test_managed_chat_waits_for_shared_readiness_and_reuses_warm_service(v
     assert not (await engine.voice.prepare("12345", result)).get("voice_file")
     ready[0] = True
     assert (await engine.voice.prepare("12345", result))["voice_file"] == str(file)
+
+
+@pytest.mark.asyncio
+async def test_managed_voice_request_triggers_lazy_loading_but_text_does_not(voice_engine, monkeypatch, tmp_path):
+    import local_voice
+    engine, store, cfg, sends, file = voice_engine
+    engine.voice.managed = True
+    cfg['voice_lazy'] = True
+    monkeypatch.setattr(local_voice, 'ROOT', tmp_path)
+    monkeypatch.setattr(voice_status, 'read_voice_status', lambda cfg: dict(ready=False))
+    cfg['voice_replies'] = False
+    result = await engine.decision('12345', 'reply')
+    await engine.voice.prepare('12345', result)
+    assert not (tmp_path / 'data/voice-demand.json').exists()
+    cfg['voice_replies'] = True
+    result = await engine.decision('12345', 'reply')
+    assert not (await engine.voice.prepare('12345', result)).get('voice_file')
+    assert json.loads((tmp_path / 'data/voice-demand.json').read_text())['requested'] > 0
+    assert not sends
 
 
 def test_starting_bot_starts_shared_voice_first_and_reuses_existing_service(tmp_path, monkeypatch):

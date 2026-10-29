@@ -32,7 +32,7 @@ import vpet_runtime
 from song_previews import SongPreviews
 from song_voice import singing_voice
 
-VERSION = "V5.16"
+VERSION = "V5.17"
 TZ = timezone(timedelta(hours=8))
 FEATURES = (
     "proactive",
@@ -483,7 +483,7 @@ class DesktopAPI:
         voice = read_voice_status(cfg, processes.get("voice"), now)
         if voice["state"] == "starting" and now - self._voice_wait_since > 180:
             voice = dict(state="unavailable", ready=False, message="语音暂未启动成功，先用文字聊天，后台会继续恢复。")
-        startup_ready = bool(connected and (not voice_required(cfg) or voice["ready"] or voice["state"] in {"unavailable", "singing"}))
+        startup_ready = bool(connected and (not voice_required(cfg) or voice["ready"] or voice["state"] in {"unavailable", "singing", "idle"}))
         budget = self._budget()
         return dict(
             version=VERSION,
@@ -495,6 +495,8 @@ class DesktopAPI:
             paused=cfg["paused"],
             live=cfg["live"],
             game_mode=cfg["game_mode"],
+            game_mode_auto=cfg.get("game_mode_auto", False),
+            game_mode_status=game_mode.status(),
             services={name: name in processes for name in services.SCRIPTS},
             daily_cny=cfg["daily_cny"],
             monthly_cny=cfg["monthly_cny"],
@@ -666,6 +668,13 @@ class DesktopAPI:
             raise ValueError("游戏模式选项无效。")
         with self._lock:
             outcome = game_mode.set_game_mode(enabled)
+        return dict(enabled=enabled, warning=bool(outcome["denied"]))
+
+    @result
+    def set_game_mode_auto(self, enabled):
+        if type(enabled) is not bool:
+            raise ValueError("自动检测选项无效。")
+        outcome = game_mode.set_auto_detection(enabled)
         return dict(enabled=enabled, warning=bool(outcome["denied"]))
 
     @result

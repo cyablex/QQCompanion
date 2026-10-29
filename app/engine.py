@@ -1019,13 +1019,19 @@ class Engine:
             return None
         if text in {"/音色 活泼", "/音色 自动"}:
             return "活泼版已停用，目前只使用日常音色。"
+        if text in {"/游戏模式 自动 开", "/游戏模式 自动 关"}:
+            from game_mode import set_auto_detection
+            outcome = set_auto_detection(text.endswith("开"))
+            if outcome["denied"]:
+                return "设置已保存，但部分工作进程未能停止，请检查游戏模式状态。"
+            return "游戏自动检测已开启，每4秒检查终末地和无畏契约。手动开启会保留；手动关闭后本轮游戏不再自动开启。" if text.endswith("开") else "游戏自动检测已关闭，保留手动游戏模式。"
         if text in {"/游戏模式 开", "/游戏模式 关"}:
             from game_mode import set_game_mode
             enabled = text.endswith("开")
             outcome = set_game_mode(enabled, cfg)
             if outcome["denied"]:
-                return "游戏模式已开启，但部分本地语音进程未能关闭，请在任务管理器核对。文字聊天继续。"
-            return "游戏模式已开启，本地语音识别和合成已暂停，文字聊天继续。" if enabled else "游戏模式已关闭，语音恢复按需处理；合成服务不会自动常驻启动。"
+                return "游戏模式已开启，但部分语音、唱歌或桌宠工作进程未能关闭，请在任务管理器核对。文字聊天继续。"
+            return "游戏模式已开启，本地语音识别、合成、唱歌和桌宠已暂停，文字聊天继续；游戏退出不会关闭手动模式。" if enabled else "游戏模式已关闭，本轮游戏不再自动开启；语音恢复按需处理，合成服务不会自动常驻启动。"
         if text == "/资料状态":
             return json.dumps(dict(enabled=cfg.get("autonomous_profile", False), profile=self.store.get(f"self_profile:{cfg['bot_qq']}", {})), ensure_ascii=False)
         if text == "/状态":
@@ -1033,6 +1039,10 @@ class Engine:
                 {
                     **self.store.status(),
                     "game_mode": cfg.get("game_mode", False),
+                    "game_mode_auto": cfg.get("game_mode_auto", False),
+                    "game_mode_manual": cfg.get("game_mode_manual", cfg.get("game_mode", False)),
+                    "game_mode_override": cfg.get("game_mode_override", False),
+                    "game_mode_status": __import__("game_mode").status(),
                     "voice_replies": cfg.get("voice_replies", False),
                     "voice_mode": cfg.get("voice_mode", "adaptive"),
                     "voice_style": cfg.get("voice_style", "everyday"),
@@ -1152,4 +1162,4 @@ class Engine:
                 (contact,),
             )
             return "已解除此私聊的发送阻塞，未自动重发任何旧消息。"
-        return "管理指令：/状态 /开始 /暂停 /恢复 /好友额度 /待审批 /同意评论 编号 /拒绝评论 编号 /午休 120 /主动聊天 开或关 /空间互动 开或关 /好友回复 开或关 /好友申请 开或关 /好友模式 测试或开放 /看图 开或关 /语音理解 开或关 /语音回复 开或关 /语音模式 自然或按需或优先 /音色 日常 /发表情 开或关 /表情库 /自主说说 开或关 /发说说 /说说状态 /记住 内容 /记忆 /忘记全部"
+        return "管理指令：/状态 /游戏模式 开或关 /游戏模式 自动 开或关 /开始 /暂停 /恢复 /好友额度 /待审批 /同意评论 编号 /拒绝评论 编号 /午休 120 /主动聊天 开或关 /空间互动 开或关 /好友回复 开或关 /好友申请 开或关 /好友模式 测试或开放 /看图 开或关 /语音理解 开或关 /语音回复 开或关 /语音模式 自然或按需或优先 /音色 日常 /发表情 开或关 /表情库 /自主说说 开或关 /发说说 /说说状态 /记住 内容 /记忆 /忘记全部"

@@ -38,6 +38,15 @@ def stop(root=ROOT):
     stopped, denied = [], []
     for process in processes(root):
         try:
+            from game_mode import stop_process
+            for child in reversed(process.children(recursive=True)):
+                try:
+                    stop_process(child)
+                    stopped.append(child.pid)
+                except psutil.NoSuchProcess:
+                    pass
+                except (psutil.AccessDenied, psutil.TimeoutExpired):
+                    denied.append(child.pid)
             process.terminate()
             try:
                 process.wait(timeout=3)
@@ -47,7 +56,7 @@ def stop(root=ROOT):
             stopped.append(process.pid)
         except psutil.NoSuchProcess:
             pass
-        except psutil.AccessDenied:
+        except (psutil.AccessDenied, psutil.TimeoutExpired):
             denied.append(process.pid)
     return dict(stopped=stopped, denied=denied)
 

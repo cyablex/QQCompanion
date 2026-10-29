@@ -11,6 +11,7 @@
   "revision": 1,
   "guests": false,
   "voice_replies": false,
+  "game_mode_auto": false,
   "singing_enabled": false,
   "autonomous_drawing": false,
   "autonomous_profile": false,

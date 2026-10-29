@@ -15,6 +15,8 @@ export interface Status {
   startup_ready: boolean;
   voice: { state: string; ready: boolean; message: string; seconds?: number; since?: number };
   paused: boolean; live: boolean; game_mode: boolean;
+  game_mode_auto: boolean;
+  game_mode_status: { monitor: { error?: string; override?: boolean; games?: string[] }; release: { denied?: number[] } };
   services: Record<string, boolean>; daily_cny: number; monthly_cny: number;
   model_route: string; model: string; official_model: string;
   budget: Budget | null;

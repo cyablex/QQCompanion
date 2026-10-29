@@ -2,13 +2,15 @@
 
 import asyncio
 import ctypes
+import json
 import os
+import threading
 import time
 
-from game_mode import close_local_voice
+from game_mode import GameMonitor, close_local_voice
 from local_voice import LocalVoice
 from settings import ROOT, atomic_json, read_settings
-from voice_status import voice_required
+from voice_status import voice_required, game_release_message
 from singing_resource import active_singing_job
 
 WARM_TIMEOUT = 180
@@ -67,7 +69,7 @@ class VoiceService:
                 return
             await self.release()
             state = "game_mode" if cfg.get("game_mode") else "paused" if cfg.get("paused") else "disabled"
-            self.status(state, "游戏模式中，语音已释放。" if state == "game_mode" else "语音当前已暂停。")
+            self.status(state, game_release_message() if state == "game_mode" else "语音当前已暂停。")
             return
         if self.task and self.task.done():
             await self.task
@@ -81,6 +83,14 @@ class VoiceService:
                 return
             self.voice.close()
         if self.task is None:
+            if cfg.get("voice_lazy"):
+                try:
+                    demand = json.loads((ROOT / "data/voice-demand.json").read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    demand = {}
+                if demand.get("requested", 0) <= cfg.get("voice_demand_after", 0):
+                    self.status("idle", "语音按需加载，下次需要语音时准备声音。")
+                    return
             if time.time() < self.retry_at:
                 self.status("unavailable", "语音暂未准备成功，先用文字聊天，稍后自动重试。")
                 return
@@ -91,14 +101,23 @@ class VoiceService:
         self.status("warming", "正在准备声音，与 QQ 登录同步进行。")
 
     async def run(self):
+        # The existing lightweight voice supervisor also owns game detection.
+        # Detect before any model warmup, including games running at startup.
+        monitor = GameMonitor()
+        await asyncio.to_thread(monitor.tick_safely)
+        monitor_stop = threading.Event()
+        monitor_thread = threading.Thread(target=monitor.run, args=(monitor_stop,), daemon=True)
+        monitor_thread.start()
         # Claim the old installation-owned API before warming, including an
         # orphan left by an earlier bot crash. The mutex prevents a second owner.
-        await asyncio.to_thread(close_local_voice, tts_only=True)
         try:
+            await asyncio.to_thread(close_local_voice, tts_only=True)
             while True:
                 await self.tick()
                 await asyncio.sleep(2)
         finally:
+            monitor_stop.set()
+            await asyncio.to_thread(monitor_thread.join, 5)
             await self.release()
             self.status("stopped", "语音服务已停止。")
 

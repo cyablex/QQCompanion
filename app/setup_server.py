@@ -155,7 +155,7 @@ class Handler(BaseHTTPRequestHandler):
 <label>测试好友 QQ（可选，多人用英文逗号分隔）</label><input name="guest_ids" value="{esc(",".join(cfg.get("guest_ids", [])))}"><small>先登记测试对象，不会仅因保存而开放其他好友或自动接受申请。</small>
 <label>好友范围</label><select name="guest_mode" style="font:inherit;padding:10px;width:100%">{mode_options}</select><small>开放模式不限制每天接受好友的人数。普通好友每天 {cfg.get("guest_daily_messages", 50)} 条；指定好友使用各自设置的额度；全号聊天回复每天共 {cfg.get("daily_chat_messages", 500)} 条，费用上限另行有效。其他开关保持原设置。</small>
 <label>游戏模式</label><select name="game_mode" style="font:inherit;padding:10px;width:100%"><option value="off"{' selected' if not cfg.get('game_mode') else ''}>关闭：语音按需处理</option><option value="on"{' selected' if cfg.get('game_mode') else ''}>开启：关闭本地语音推理</option></select><small>开启后暂停本地语音识别和合成，文字聊天继续；关闭后按需使用，不自动常驻启动合成服务。</small>
-<button type="submit">保存到本机</button></form><p class="muted">人设下次回复时生效，保留已有聊天记忆。模型名或 Key 改动后需重启机器人。主人可在 QQ 发 /状态、/帮助、/午休 120、/暂停、/恢复、/游戏模式 开、/游戏模式 关。</p></main></html>'''
+<button type="submit">保存到本机</button></form><p class="muted">人设下次回复时生效，保留已有聊天记忆。模型名或 Key 改动后需重启机器人。主人可在 QQ 发 /状态、/帮助、/午休 120、/暂停、/恢复、/游戏模式 开、/游戏模式 关、/游戏模式 自动 开、/游戏模式 自动 关。</p></main></html>'''
         self.response(page)
 
     def do_POST(self):
@@ -257,14 +257,17 @@ class Handler(BaseHTTPRequestHandler):
                 game_mode = data["game_mode"][0]
                 if game_mode not in {"on", "off"}:
                     return self.response("游戏模式选项无效。<a href='/'>返回</a>", 400)
-                cfg["game_mode"] = game_mode == "on"
+                requested_game = game_mode == "on"
+            else:
+                requested_game = cfg.get("game_mode", False)
+            change_game = requested_game != cfg.get("game_mode", False)
             cfg["revision"] += 1
             atomic_json(ROOT / "config/user.json", cfg)
-            if cfg.get("game_mode"):
-                from game_mode import close_local_voice
-                stopped = close_local_voice()
+            if change_game:
+                from game_mode import set_game_mode
+                stopped = set_game_mode(requested_game, cfg)
                 if stopped["denied"]:
-                    return self.response("游戏模式已保存，但部分语音进程未能关闭，请在任务管理器核对。<a href='/'>返回</a>")
+                    return self.response("游戏模式已保存，但部分语音、唱歌或桌宠工作进程未能关闭，请在任务管理器核对。<a href='/'>返回</a>")
             self.response(
                 "<!doctype html><meta charset='utf-8'><title>保存完成</title><body style='font:18px system-ui;max-width:680px;margin:70px auto'><h1>已保存到本机</h1><p>可以返回 QQ 继续聊天。API Key 不会显示；保存设置没有发送任何消息。</p><p>模型名或 Key 改动需要重启机器人；人设下次生成时生效。</p><a href='/'>返回设置</a> · <a href='/status'>查看运行状态</a></body>"
             )

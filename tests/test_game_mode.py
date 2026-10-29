@@ -36,6 +36,9 @@ def test_switch_closes_only_owned_voice_inference_processes(tmp_path, monkeypatc
         def wait(self, timeout):
             return 0
 
+        def children(self, recursive=True):
+            return []
+
         def cwd(self):
             return tmp_path / ("SeedVC" if self.pid in {8, 10} else "other")
 
@@ -47,10 +50,11 @@ def test_switch_closes_only_owned_voice_inference_processes(tmp_path, monkeypatc
         Process(5, tmp_path / "VPN.exe", []),
         Process(6, tmp_path / "python.exe", ["api_v2.py"]),
         Process(7, tmp_path / "pwsh.exe", ["contains " + str(root / "app/speech_worker.py")]),
-        Process(8, tmp_path / "python.exe", ["companion_svc.py"]),
+        Process(8, tmp_path / "SeedVC/.venv/Scripts/python.exe", [root / "integrations/seedvc/companion_svc.py"]),
         Process(9, tmp_path / "python.exe", ["companion_svc.py"]),
-        Process(10, tmp_path / "python.exe", [root / "app/song_worker.py", "--song-id", "demo"]),
+        Process(10, tmp_path / "SeedVC/.venv/Scripts/python.exe", [root / "app/song_worker.py", "--song-id", "demo"]),
         Process(11, tmp_path / "python.exe", [tmp_path / "other/song_worker.py"]),
+        Process(12, tts / "app/bundle/runtime/python.exe", [tmp_path / "other/api_v2.py"]),
     ]
     monkeypatch.setattr(game_mode.psutil, "process_iter", lambda attrs: processes)
     expected = [2] if tts_only else [1, 2, 8, 10]
@@ -59,6 +63,8 @@ def test_switch_closes_only_owned_voice_inference_processes(tmp_path, monkeypatc
 
 
 def test_switch_is_persistent_and_off_does_not_restart_voice(tmp_path, monkeypatch):
+    import settings
+    monkeypatch.setattr(settings, "ROOT", tmp_path)
     monkeypatch.setattr(game_mode, "ROOT", tmp_path)
     stopped = []
     monkeypatch.setattr(game_mode, "close_local_voice", lambda: stopped.append(True) or dict(stopped=[], denied=[]))
@@ -221,6 +227,7 @@ def test_settings_page_game_switch_saves_and_closes_voice(tmp_path, monkeypatch)
     import settings
 
     monkeypatch.setattr(settings, "ROOT", tmp_path)
+    monkeypatch.setattr(game_mode, "ROOT", tmp_path)
     (tmp_path / "config").mkdir()
     path = Path(__file__).resolve().parents[1] / "app/setup_server.py"
     spec = importlib.util.spec_from_file_location("test_setup_game_mode", path)

@@ -283,12 +283,13 @@ class Singing:
         self.store.db.execute("INSERT OR IGNORE INTO song_requests VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                               (key, song["id"], contact, origin["requester"], source, cfg["owner_qq"], cfg["bot_qq"],
                                "waiting", origin["created"], now, 0, engine.memory_epoch(contact), ""))
-        if song["state"] == "ready":
+        if cfg.get("game_mode"):
+            note = f"《{title}》的点歌已记下。现在是游戏模式，等退出后我再准备或播放。"
+            await self.say(contact, note, key + ":notice:" + source, engine, source_event=origin['event_id'])
+        elif song["state"] == "ready":
             await self.deliver(key)
         else:
             note = f"好，《{title}》的{artist}版我还没准备好。我去学一下，做好后就发到这里，稍等我一会儿。"
-            if cfg.get("game_mode"):
-                note = f"《{title}》的点歌已记下。现在是游戏模式，等退出后我再准备，做好就发到这里。"
             await self.say(contact, note, key + ":notice:" + source, engine, source_event=origin['event_id'])
         return True
 
@@ -304,7 +305,7 @@ class Singing:
                 or request["generation"] != engine.memory_epoch(contact)):
             self.store.db.execute("UPDATE song_requests SET state='cancelled' WHERE id=?", (request_id,))
             return
-        if not engine.allowed(cfg, contact) or not cfg.get("singing_enabled", True):
+        if not engine.allowed(cfg, contact) or not cfg.get("singing_enabled", True) or cfg.get("game_mode"):
             return
         song = self.library.get(request["song_id"])
         if not song or song["state"] == "deleted":

@@ -76,6 +76,7 @@ def read_settings():
         "startup_welcome": False,
         "singing_enabled": True,
         "game_mode": False,
+        "game_mode_auto": False,
         "send_memes": False,
         "autonomous_posts": False,
         "owner_public_sharing": False,

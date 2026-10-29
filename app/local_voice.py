@@ -14,7 +14,7 @@ from pathlib import Path
 
 import psutil
 
-from settings import ROOT, read_settings
+from settings import ROOT, atomic_json, read_settings
 
 TTS_ROOT = ROOT.parent / "GPTSoVITS"
 API = "http://127.0.0.1:9880"
@@ -211,6 +211,8 @@ class LocalVoice:
             from voice_status import read_voice_status
 
             if not read_voice_status(cfg)["ready"]:
+                if cfg.get("voice_lazy"):
+                    atomic_json(ROOT / "data/voice-demand.json", dict(requested=time.time()))
                 self.store.set("local_voice_status", dict(state="text_fallback", reason="service_preparing", at=time.time()))
                 return result
         if self.pending and not self.pending.done():

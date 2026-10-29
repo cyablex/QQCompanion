@@ -195,12 +195,18 @@ async def test_unknown_delivery_is_not_retried_or_replaced_with_fake_success(son
 
 
 @pytest.mark.asyncio
-async def test_game_mode_allows_cached_song_but_defers_new_conversion(songs):
+async def test_game_mode_defers_cached_song_and_new_conversion_then_resumes(songs):
     ready(songs)
     songs.cfg["game_mode"] = True
     incoming(songs, "唱司凤版雨爱")
     await songs.engine.reply("12345")
+    assert "游戏模式" in songs.sent[-1][1] and not songs.sent[-1][2].get("song_file")
+    await songs.manager.tick()
+    assert not any(send[2].get("song_file") for send in songs.sent)
+    songs.cfg["game_mode"] = False
+    await songs.manager.tick()
     assert songs.sent[-1][2].get("song_file")
+    songs.cfg["game_mode"] = True
     songs.parsed.update(title="稻香", artist="周杰伦")
     incoming(songs, "唱周杰伦的稻香", event="new")
     await songs.engine.reply("12345")

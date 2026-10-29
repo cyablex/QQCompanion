@@ -68,10 +68,12 @@ async def test_game_mode_blocks_interaction_and_status_never_calls_model(pet):
 
 
 def test_game_mode_closes_only_owned_pet_and_restores_requested_state(tmp_path, monkeypatch):
+    import settings
+    monkeypatch.setattr(settings, 'ROOT', tmp_path)
     monkeypatch.setattr(game_mode, 'ROOT', tmp_path)
     stopped, starts = [], []
     own = SimpleNamespace(pid=1, info={'exe': str(tmp_path / 'vpet/host/DafeiyuPet.exe')},
-                          terminate=lambda: stopped.append(1), wait=lambda timeout: None)
+                          terminate=lambda: stopped.append(1), wait=lambda timeout: None, children=lambda recursive: [])
     other = SimpleNamespace(pid=2, info={'exe': str(tmp_path / 'other/DafeiyuPet.exe')})
     monkeypatch.setattr(vpet_runtime.psutil, 'process_iter', lambda _: [own, other])
     monkeypatch.setattr(game_mode, 'close_local_voice', lambda: dict(stopped=[3], denied=[]))

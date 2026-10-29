@@ -38,7 +38,10 @@ async function control(action: string) {
 }
 async function game(value: boolean) {
   const result = await run<{ warning: boolean }>('set_game_mode', [value], value ? '游戏模式已开启，文字聊天继续。' : '游戏模式已关闭，语音恢复按需处理。')
-  if (result?.warning) notify('游戏模式已保存，但部分语音进程未能关闭，请核对任务管理器。')
+  if (result?.warning) notify('游戏模式已保存，但部分工作进程未能关闭，请核对任务管理器。')
+}
+async function autoGame(value: boolean) {
+  await run('set_game_mode_auto', [value], value ? '自动检测已开启，最多4秒生效。' : '自动检测已关闭，保留手动游戏模式。')
 }
 </script>
 <template>
@@ -47,7 +50,7 @@ async function game(value: boolean) {
   <div v-if="status?.budget_exhausted" class="alert warning">今日日常预算已用完，新的付费调用将暂停。北京时间次日重置；QQ 连接保留。</div>
   <section v-if="status?.phase === 'waiting_login'" class="card login-card"><div><span class="eyebrow">QQ LOGIN</span><h2>{{ status.login_scanned ? '已扫码，请在手机确认' : '扫码，让大肥鱼上线' }}</h2><p>请使用大肥鱼的小号在手机 QQ 确认。二维码会随登录状态更新。</p></div><img v-if="qr" :src="qr" alt="大肥鱼 QQ 登录二维码" width="180" height="180" /><p v-else class="muted">等待二维码准备完成…</p></section>
   <div class="overview-grid">
-    <section class="card game-card"><div class="card-title"><div class="icon-tile"><AppIcon name="game" :size="23" /></div><ToggleSwitch :model-value="status?.game_mode || false" label="游戏模式" :disabled="!connected || busy" @update:model-value="game" /></div><h2>给游戏腾点空间。</h2><p>开启游戏模式，暂停本地语音识别与合成推理。文字聊天照常继续。</p><div class="card-foot"><span class="dot" :class="{ gray: !status?.game_mode }" />{{ status?.game_mode ? '游戏模式已开启' : '语音按需处理' }}</div></section>
+    <section class="card game-card"><div class="card-title"><div class="icon-tile"><AppIcon name="game" :size="23" /></div><ToggleSwitch :model-value="status?.game_mode || false" label="游戏模式" :disabled="!connected || busy" @update:model-value="game" /></div><h2>给游戏腾点空间。</h2><p>暂停本地语音识别、合成、唱歌与桌宠，保留文字聊天和 QQ 连接。</p><ToggleSwitch :model-value="status?.game_mode_auto || false" label="自动检测游戏" :disabled="!connected || busy" @update:model-value="autoGame" /><p class="tiny muted">每4秒检测终末地、无畏契约，全部退出后恢复。手动开启会保留；手动关闭后，本轮游戏不再自动开启。退出后语音按需加载。</p><p v-if="status?.game_mode_status.monitor.error" class="alert warning">游戏检测失败：{{ status.game_mode_status.monitor.error }}，保留上次状态。</p><p v-if="status?.game_mode && status.game_mode_status.release.denied?.length" class="alert warning">部分工作进程未能释放，PID：{{ status.game_mode_status.release.denied.join('、') }}</p><div class="card-foot"><span class="dot" :class="{ gray: !status?.game_mode }" />{{ status?.game_mode ? '游戏模式已开启' : '语音按需处理' }}</div></section>
     <section class="card budget-card">
       <div class="section-top"><span class="eyebrow">TODAY’S COST ESTIMATE</span><span class="subtle-badge">模型 + 联网工具</span></div>
       <div class="money">{{ status?.budget ? `¥${status.budget.usage_estimate.toFixed(4)}` : '—' }}<span>今日费用</span></div>
