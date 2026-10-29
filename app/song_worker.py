@@ -171,6 +171,7 @@ class SongWorker:
                           "--target", voice["reference"], "--pitch-mode", voice["pitch_mode"], "--shift", str(voice["shift"]),
                           "--steps", str(voice['steps']),
                           "--cfg-rate", str(voice['guidance']),
+                          "--continuity-context", '1.0' if voice['continuity'] else '0',
                           "--output", str(self.work / "converted")])
             converted = list((self.work / "converted").glob("*.wav"))
             if len(converted) != 1:

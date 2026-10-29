@@ -70,10 +70,12 @@ class SongPreviews:
         version = uuid.uuid4().hex
         folder = self.folder(song_id, version)
         folder.mkdir(parents=True)
+        voice = singing_voice(cfg, self.root)
         job = dict(song, created=time.time(), label='参考音域试听' if mode == 'reference_octave' else '原音域试听',
                    voice_options=dict(singing_pitch_mode=mode, singing_pitch_shift=shift,
-                                      singing_guidance=singing_voice(cfg, self.root)['guidance'],
-                                      singing_reference=singing_voice(cfg, self.root)['reference']))
+                                      singing_guidance=voice['guidance'],
+                                      singing_continuity=voice['continuity'],
+                                      singing_reference=voice['reference']))
         atomic_json(folder / 'job.json', job)
         with (self.root / 'logs/songbook.log').open('ab') as log:
             process = subprocess.Popen([str(self.root.parent / 'SeedVC/.venv/Scripts/python.exe'), '-X', 'utf8',

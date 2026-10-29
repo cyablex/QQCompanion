@@ -24,4 +24,7 @@ def singing_voice(cfg, root=ROOT):
     guidance = cfg.get('singing_guidance', 0.9)
     if isinstance(guidance, bool) or not isinstance(guidance, (int, float)) or not math.isfinite(guidance) or not 0 <= guidance <= 1:
         raise ValueError('歌声参考引导强度必须在0到1之间。')
-    return dict(reference=str(path), pitch_mode=mode, shift=shift, steps=50, guidance=float(guidance))
+    continuity = cfg.get('singing_continuity', False)
+    if type(continuity) is not bool:
+        raise ValueError('歌声连续上下文选项无效。')
+    return dict(reference=str(path), pitch_mode=mode, shift=shift, steps=50, guidance=float(guidance), continuity=continuity)

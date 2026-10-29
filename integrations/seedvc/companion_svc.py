@@ -21,9 +21,12 @@ def main():
     parser.add_argument('--cfg-rate', type=float, default=0.9, help='Seed-VC参考引导强度，0到1')
     parser.add_argument("--shift", type=int, choices=range(-12, 13), default=0)
     parser.add_argument("--pitch-mode", choices=("reference_octave", "preserve"), default="preserve")
+    parser.add_argument('--continuity-context', type=float, default=0, help='可选的相邻歌声片段连续上下文，0到2秒')
     args = parser.parse_args()
     if not math.isfinite(args.cfg_rate) or not 0 <= args.cfg_rate <= 1:
         parser.error('参考引导强度必须在0到1之间')
+    if not math.isfinite(args.continuity_context) or not 0 <= args.continuity_context <= 2:
+        parser.error('连续上下文必须在0到2秒之间')
     if not args.source.is_file() or not args.target.is_file():
         parser.error("需要实际存在的歌声干声与参考音色文件")
     config = Path(os.environ.get("QQCOMPANION_ROOT", ROOT.parent / "QQCompanion")) / "config/user.json"
@@ -60,9 +63,15 @@ def main():
     from pitch_policy import reference_register
 
     load_models = inference.load_models
+    context_calls = []
 
     def load_with_pitch_report(options):
         models = list(load_models(options))
+        if args.continuity_context:
+            import torch
+            from streaming_context import install_continuity
+            context_calls.extend([install_continuity(models[0]['cfm'], torch.cat,
+                context_frames=round(args.continuity_context * 44100 / 512))])
         extract = models[2]
         reference = None
 
@@ -97,6 +106,8 @@ def main():
                             length_adjust=1.0, inference_cfg_rate=args.cfg_rate, f0_condition=True,
                             auto_f0_adjust=False, semi_tone_shift=args.shift,
                             checkpoint=None, config=None, fp16=True))
+    if context_calls:
+        (args.output / 'continuity.json').write_text(json.dumps(context_calls[0], indent=2), encoding='utf-8')
 
 
 if __name__ == "__main__":
