@@ -65,7 +65,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(image.read_bytes())
                 return
-            return self.response(render(state))
+            return self.response(render(state, CSRF))
         if self.path == "/qq-login":
             path = ROOT / "napcat/config/webui.json"
             if not path.exists():
@@ -159,7 +159,7 @@ class Handler(BaseHTTPRequestHandler):
         self.response(page)
 
     def do_POST(self):
-        if not self.allowed_host() or self.path not in {"/save", "/relay/save"}:
+        if not self.allowed_host() or self.path not in {"/save", "/relay/save", "/qq-qr/refresh"}:
             return self.response("Forbidden", 403)
         # Embedded browsers can report an opaque or application origin. The
         # unpredictable form token below is the CSRF check; no CORS is enabled.
@@ -175,6 +175,18 @@ class Handler(BaseHTTPRequestHandler):
             )
             if not secrets.compare_digest(data.get("csrf", [""])[0], CSRF):
                 return self.response("请重新打开设置页后保存。", 403)
+            if self.path == "/qq-qr/refresh":
+                from napcat_control import refresh_login_qr
+
+                try:
+                    refresh_login_qr()
+                except ValueError as exc:
+                    return self.response(html.escape(str(exc)) + '<p><a href="/startup">返回登录页</a></p>', 409)
+                self.send_response(303)
+                self.send_header("Location", "/startup")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
             if self.path == "/relay/save":
                 from relay_setup import save
 

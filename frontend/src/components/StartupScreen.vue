@@ -13,10 +13,21 @@ let loadingRequested = !!props.error || window.matchMedia('(prefers-reduced-moti
 const phase = computed(() => props.status?.phase || '')
 const qr = ref<string | null>(null)
 const qrUnavailable = ref(false)
-const needsQr = computed(() => props.startup && atGate.value && phase.value === 'waiting_login' && !props.status?.login_scanned)
-watch([() => props.status, atGate], async (_value, _old, onCleanup) => {
+const qrRefreshing = ref(false)
+const qrError = ref('')
+async function refreshQr() {
+  if (qrRefreshing.value || phase.value !== 'waiting_login' || props.status?.login_scanned) return
+  qrRefreshing.value = true; qrError.value = ''; qr.value = null
+  try { qr.value = await call<string>('refresh_login_qr'); qrUnavailable.value = false }
+  catch (e) { qrError.value = (e as Error).message }
+  finally { qrRefreshing.value = false }
+}
+watch(phase, () => { qrError.value = '' })
+const needsQr = computed(() => props.startup && (atGate.value || failed.value) && phase.value === 'waiting_login' && !props.status?.login_scanned)
+watch([() => props.status, atGate, failed, qrRefreshing], async (_value, _old, onCleanup) => {
   let current = true
   onCleanup(() => { current = false })
+  if (qrRefreshing.value || qrError.value) return
   if (!needsQr.value || !props.status?.qr_available) {
     qr.value = null; qrUnavailable.value = false
     return
@@ -29,6 +40,8 @@ watch([() => props.status, atGate], async (_value, _old, onCleanup) => {
   }
 }, { immediate: true })
 const hint = computed(() => {
+  if (qrRefreshing.value) return '正在重新申请二维码，请稍候…'
+  if (qrError.value) return qrError.value
   if (props.error) return props.error
   if (phase.value === 'waiting_login') {
     if (props.status?.login_scanned) return '请在手机 QQ 确认登录，完成本次访问授权。'
@@ -47,7 +60,7 @@ function sendState() {
   frame.value?.contentWindow?.postMessage({ type: 'dafeiyu-startup:state',
     ready: !props.startup || props.ready, starting: props.starting, error: props.error,
     phase: phase.value, scanned: !!props.status?.login_scanned, hint: hint.value,
-    qr: needsQr.value ? qr.value : null,
+    qr: needsQr.value ? qr.value : null, qrRefreshing: qrRefreshing.value,
     login: ['waiting_login', 'wrong_account', 'recovery_failed', 'session_unavailable'].includes(phase.value)
   }, '*')
 }
@@ -69,8 +82,9 @@ function message(event: MessageEvent) {
   else if (type === 'dafeiyu-startup:skip') skip()
   else if (type === 'dafeiyu-startup:failed') failed.value = true
   else if (type === 'dafeiyu-startup:qr-error') { qr.value = null; qrUnavailable.value = true }
-  else if (type === 'dafeiyu-startup:action' && ['retry', 'settings', 'login'].includes(event.data.action)) {
-    if (event.data.action === 'retry') emit('retry')
+  else if (type === 'dafeiyu-startup:action' && ['retry', 'settings', 'login', 'refresh-qr'].includes(event.data.action)) {
+    if (event.data.action === 'refresh-qr') void refreshQr()
+    else if (event.data.action === 'retry') emit('retry')
     else if (event.data.action === 'settings') emit('settings')
     else emit('login')
   }
@@ -83,7 +97,7 @@ function key(event: KeyboardEvent) {
     frame.value?.contentWindow?.postMessage({ type: 'dafeiyu-startup:key', key: event.key }, '*')
   }
 }
-watch([() => props.status, () => props.ready, () => props.starting, () => props.error, qr, qrUnavailable], sendState, { flush: 'post' })
+watch([() => props.status, () => props.ready, () => props.starting, () => props.error, qr, qrUnavailable, qrRefreshing, qrError], sendState, { flush: 'post' })
 watch(() => props.error, value => { if (value) skip() })
 watch([failed, () => props.ready], () => { if (failed.value && (!props.startup || props.ready)) emit('done', false) })
 onMounted(() => {
@@ -100,11 +114,12 @@ onUnmounted(() => {
 <template>
   <section class="startup-overlay" role="dialog" aria-modal="true" aria-label="大肥鱼开场与启动加载">
     <iframe v-show="!failed" ref="frame" class="startup-frame" :src="`./startup/index.html?gate=${startup ? '1' : '0'}`" sandbox="allow-scripts" title="大肥鱼开场与启动加载" @load="loaded" @error="failed = true" />
-    <div v-if="failed" class="startup-fallback" role="status"><p>动画暂不可用，仍在检查连接。</p><p>{{ hint }}</p><div><button class="text-button" @click="emit('retry')">重新检查</button><button class="text-button" @click="emit('login')">打开登录页</button><button class="text-button" @click="emit('settings')">检查设置</button></div></div>
+    <div v-if="failed" class="startup-fallback" role="status"><p>动画暂不可用，仍在检查连接。</p><p>{{ hint }}</p><div v-if="needsQr" class="fallback-qr"><button class="text-button" :disabled="qrRefreshing" aria-label="刷新登录二维码" @click="refreshQr">↻ {{ qrRefreshing ? '刷新中…' : '刷新二维码' }}</button><img v-if="qr" :src="qr" width="180" height="180" alt="QQ 登录二维码" /></div><div><button class="text-button" @click="emit('retry')">重新检查</button><button class="text-button" @click="emit('login')">打开登录页</button><button class="text-button" @click="emit('settings')">检查设置</button></div></div>
     <button v-if="!atGate && !failed" class="startup-skip" type="button" aria-label="跳到启动加载" aria-keyshortcuts="Escape" title="跳到启动加载 · Esc" @click="skip"><span>skip</span><svg viewBox="0 0 8 10" aria-hidden="true"><path d="M1 1 7 5 1 9Z" /></svg></button>
   </section>
 </template>
 <style scoped>
 .startup-fallback { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px; background:#e5e3df; color:#3a3936; }
+.fallback-qr { flex-direction:column; align-items:center; gap:10px !important; }
 .startup-fallback > div { display:flex; gap:24px; }
 </style>

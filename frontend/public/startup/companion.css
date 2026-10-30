@@ -22,3 +22,15 @@
 #dsh-startup-root .dsu-loading-controls button:focus-visible { outline:1px solid var(--dsu-accent); outline-offset:5px; }
 .dsu-session-loading .dsu-sub-zh { max-width:80vw; text-align:center; overflow-wrap:anywhere; }
 @media (max-height:730px) { .dsu-loading-controls { bottom:100px; }.dsu-session-loading .dsu-sub-zh { font-size:12px; } }
+
+#dsh-startup-root .dsu-login-code img[hidden],
+#dsh-startup-root .dsu-qr-placeholder[hidden] { display:none; }
+.dsu-qr-placeholder { display:flex; aspect-ratio:1; align-items:center; justify-content:center; color:#617078; font:13px system-ui; line-height:1.5; }
+.dsu-refresh-qr { position:absolute; right:0; top:-42px; display:grid; place-items:center; width:34px; height:34px; border:1px solid var(--dsu-hair); border-radius:50%; color:var(--dsu-ink-soft); background:#fff; cursor:pointer; }
+.dsu-refresh-qr svg { width:20px; height:20px; }
+.dsu-refresh-qr:hover { color:var(--dsu-accent); border-color:var(--dsu-accent); }
+.dsu-refresh-qr:focus-visible { outline:2px solid var(--dsu-accent); outline-offset:3px; }
+.dsu-refresh-qr:disabled { cursor:wait; opacity:.6; }
+.dsu-refresh-qr.is-refreshing svg { animation:qr-spin 1s linear infinite; }
+@keyframes qr-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce) { .dsu-refresh-qr.is-refreshing svg { animation:none; } }

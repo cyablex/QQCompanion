@@ -19,7 +19,7 @@ def load_state():
         return dict(phase="starting")
 
 
-def render(state):
+def render(state, csrf=""):
     phase = state.get("phase", "starting")
     title, detail = {
         "offline_development": (
@@ -68,6 +68,11 @@ def render(state):
         if phase == "waiting_login" and state.get("qr_available")
         else ""
     )
+    if phase == "waiting_login" and state.get("login_phase") != "qrcode_scanned":
+        image = ('<form method="post" action="/qq-qr/refresh" style="text-align:right">'
+                 f'<input type="hidden" name="csrf" value="{html.escape(csrf, quote=True)}">'
+                 '<button type="submit" aria-label="刷新登录二维码" title="重新获取二维码" '
+                 'style="font-size:26px;cursor:pointer;border:1px solid #cdd7d4;border-radius:50%;background:white;width:42px;height:42px">↻</button></form>') + image
     if phase == "offline_development":
         return f'<!doctype html><meta charset="utf-8"><title>大肥鱼 · 离线开发</title><main style="font:18px/1.8 system-ui;max-width:650px;margin:60px auto"><h1>{title}</h1><p>{detail}</p><a href="/">本机设置</a></main>'
     return f"""<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="5"><title>大肥鱼 · 启动状态</title><style>body{{font:17px/1.7 system-ui;background:#f5f4ef;color:#243339;max-width:650px;margin:60px auto;padding:20px}}main{{background:white;padding:30px;border-radius:18px}}img{{display:block;max-width:100%;height:auto;margin:24px auto}}a{{color:#226857}}.muted{{color:#617078;font-size:14px}}</style><main><h1>{html.escape(title)}</h1><p>{html.escape(detail)}</p>{image}<p><a href="/qq-login">打开 QQ 登录管理</a> · <a href="/">本机设置</a></p><p class="muted">本页每 5 秒刷新。需要手机验证时无法跳过授权；扫码完成后无需再次点击启动。登录成功后可以关闭本页。</p></main></html>"""

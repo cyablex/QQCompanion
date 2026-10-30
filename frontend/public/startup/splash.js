@@ -334,7 +334,9 @@
     '</div>' +
     '<div class="dsu-idline"></div>' +
     '<div class="dsu-reticle"></div>' +
-    '<div class="dsu-login-code" hidden><img alt="QQ 登录二维码，请用手机 QQ 扫描"></div>' +
+    '<div class="dsu-login-code" hidden>' +
+      '<button type="button" class="dsu-refresh-qr" aria-label="刷新登录二维码" title="二维码过期？点击重新获取"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6 6a8 8 0 0 1 13 2M18 18a8 8 0 0 1-13-2"/></svg></button>' +
+      '<img alt="QQ 登录二维码，请用手机 QQ 扫描"><span class="dsu-qr-placeholder">等待二维码…</span></div>' +
     '<div class="dsu-loading-controls" hidden>' +
       '<button type="button" data-action="login">登录管理 ↗</button>' +
       '<button type="button" data-action="retry">重新检查 ↻</button>' +
@@ -1320,11 +1322,19 @@
     ui.subEn.textContent = state.error ? 'CONNECTION CHECK' : login ? (state.scanned ? 'AWAITING CONFIRMATION' : 'ACCESS AUTHORIZATION') : 'LOADING'
     setStepCount(5, login ? 'AUTHORIZE' : 'LOADING')
     var code = q('.dsu-login-code'), img = code.querySelector('img')
-    var showQr = login && !state.scanned && !!state.qr
+    var showQr = login && !state.scanned
     code.hidden = !showQr
     root.classList.toggle('dsu-has-qr', showQr)
-    if (showQr && img.getAttribute('src') !== state.qr) img.src = state.qr
-    else if (!showQr) img.removeAttribute('src')
+    img.hidden = !state.qr || !!state.qrRefreshing
+    var placeholder = code.querySelector('.dsu-qr-placeholder')
+    placeholder.hidden = !img.hidden
+    placeholder.textContent = state.qrRefreshing ? '正在刷新…' : '等待二维码…'
+    var refreshButton = code.querySelector('button')
+    refreshButton.disabled = !!state.qrRefreshing
+    refreshButton.classList.toggle('is-refreshing', !!state.qrRefreshing)
+    refreshButton.setAttribute('aria-busy', String(!!state.qrRefreshing))
+    if (showQr && state.qr && !state.qrRefreshing && img.getAttribute('src') !== state.qr) img.src = state.qr
+    else if (!showQr || !state.qr || state.qrRefreshing) img.removeAttribute('src')
     ui.subZh.textContent = state.hint || '正在同步后台与聊天通道，请稍候。'
     ui.subEn2.textContent = login ? (state.scanned ? 'AWAITING MOBILE APPROVAL' : 'SCAN · AUTHORIZE · CONNECT') : 'ESTABLISHING SESSION'
     ui.subZh.classList.add('dsu-in')
@@ -1334,6 +1344,9 @@
     q('[data-action="settings"]').disabled = !!state.starting
   }
 
+  q('.dsu-refresh-qr').addEventListener('click', function () {
+    if (!this.disabled) parent.postMessage({type:'dafeiyu-startup:action', action:'refresh-qr'}, '*')
+  })
   q('.dsu-login-code img').addEventListener('error', function () {
     parent.postMessage({type:'dafeiyu-startup:qr-error'}, '*')
   })

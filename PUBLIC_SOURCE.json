@@ -206,6 +206,7 @@
     "tests/test_game_mode.py",
     "tests/test_launch_readiness.py",
     "tests/test_local_voice.py",
+    "tests/test_login_qr_refresh.py",
     "tests/test_migration.py",
     "tests/test_multimedia.py",
     "tests/test_offline_development.py",

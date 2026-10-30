@@ -32,7 +32,7 @@ import vpet_runtime
 from song_previews import SongPreviews
 from song_voice import singing_voice
 
-VERSION = "V5.19"
+VERSION = "V5.20"
 TZ = timezone(timedelta(hours=8))
 FEATURES = (
     "proactive",
@@ -763,6 +763,13 @@ class DesktopAPI:
         services.start(["setup"])
         os.startfile("http://127.0.0.1:8765/startup")
         return dict(opened=True)
+
+    @result
+    def refresh_login_qr(self):
+        from napcat_control import refresh_login_qr
+
+        image = refresh_login_qr()
+        return "data:image/png;base64," + base64.b64encode(image).decode("ascii")
 
     @result
     def get_qr(self):

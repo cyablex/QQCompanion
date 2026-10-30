@@ -13,6 +13,15 @@ const { status, connected, busy, refresh, run, notify } = useCompanion()
 const stopDialog = ref(false)
 const budgetExpanded = ref(false)
 const qr = ref<string | null>(null)
+const qrRefreshing = ref(false)
+const qrError = ref('')
+async function refreshQr() {
+  if (qrRefreshing.value) return
+  qrRefreshing.value = true; qrError.value = ''; qr.value = null
+  try { qr.value = await call<string>('refresh_login_qr'); await refresh() }
+  catch (e) { qrError.value = (e as Error).message }
+  finally { qrRefreshing.value = false }
+}
 const phases: Record<string, [string, string]> = {
   ready: ['大肥鱼，在线中。', '连接已经准备好。去 QQ 和她聊聊，或者让她自在地过会儿日常。'],
   stopped: ['休息一下，随时再见。', '后台已停止。想聊天时，点击启动，让大肥鱼回来。'],
@@ -28,9 +37,13 @@ const copy = computed(() => phases[status.value?.phase || ''] || ['今天，也�
 const running = computed(() => !!status.value && ['bot', 'qq', 'login', 'watchdog'].some(n => status.value?.services[n]))
 const allRunning = computed(() => !!status.value && ['bot', 'qq', 'login', 'watchdog'].every(n => status.value?.services[n]))
 const progress = computed(() => Math.min(100, (status.value?.budget?.today || 0) / (status.value?.daily_cny || 3) * 100))
-watch(() => status.value?.qr_available ? status.value?.health_age : null, async () => {
-  qr.value = status.value?.qr_available ? await call<string | null>('get_qr').catch(() => null) : null
-})
+watch([status, qrRefreshing], async (_value, _old, onCleanup) => {
+  let current = true
+  onCleanup(() => { current = false })
+  if (qrRefreshing.value || qrError.value) return
+  const image = status.value?.qr_available ? await call<string | null>('get_qr').catch(() => null) : null
+  if (current) qr.value = image
+}, { immediate: true })
 async function control(action: string) {
   stopDialog.value = false
   const messages: Record<string, string> = { start: '启动请求已提交，正在等待真实连接就绪。', pause: '聊天与自主活动已暂停。', resume: '聊天与自主活动已恢复。', stop: '运行服务已停止，控制台可以继续使用。' }
@@ -48,7 +61,7 @@ async function autoGame(value: boolean) {
   <div class="page-heading"><div><span class="eyebrow">DAFEIYU COMPANION</span><h1>一点日常，都在这里。</h1><p>照看运行，也给陪伴留一点空间。</p></div><button class="button quiet" :disabled="!connected || busy" @click="refresh"><AppIcon name="refresh" :size="16" />刷新状态</button></div>
   <section class="hero-card"><div class="hero-copy"><span class="status-pill" :class="{ online: status?.phase === 'ready' }"><span class="dot" :class="{ amber: status?.phase !== 'ready' }" />{{ status?.phase === 'ready' ? '一切就绪' : status?.phase === 'stopped' ? '已停止' : status?.phase === 'paused' ? '已暂停' : '连接检查中' }}</span><h2>{{ copy[0] }}</h2><p>{{ copy[1] }}</p><div class="hero-actions"><button class="button primary" :disabled="!connected || busy || allRunning" @click="control('start')"><AppIcon name="play" :size="17" />{{ allRunning ? '后台已启动' : '启动大肥鱼' }}</button><button class="button secondary" :disabled="!connected || busy || !running" @click="control(status?.paused || !status?.live ? 'resume' : 'pause')"><AppIcon :name="status?.paused || !status?.live ? 'play' : 'pause'" :size="17" />{{ status?.paused || !status?.live ? '恢复聊天' : '暂停聊天' }}</button></div></div><WhaleArt /><span class="hero-caption">SLOW DAYS, GOOD COMPANY.</span></section>
   <div v-if="status?.budget_exhausted" class="alert warning">今日日常预算已用完，新的付费调用将暂停。北京时间次日重置；QQ 连接保留。</div>
-  <section v-if="status?.phase === 'waiting_login'" class="card login-card"><div><span class="eyebrow">QQ LOGIN</span><h2>{{ status.login_scanned ? '已扫码，请在手机确认' : '扫码，让大肥鱼上线' }}</h2><p>请使用大肥鱼的小号在手机 QQ 确认。二维码会随登录状态更新。</p></div><img v-if="qr" :src="qr" alt="大肥鱼 QQ 登录二维码" width="180" height="180" /><p v-else class="muted">等待二维码准备完成…</p></section>
+  <section v-if="status?.phase === 'waiting_login'" class="card login-card"><div><span class="eyebrow">QQ LOGIN</span><h2>{{ status.login_scanned ? '已扫码，请在手机确认' : '扫码，让大肥鱼上线' }}</h2><p>请使用大肥鱼的小号在手机 QQ 确认。二维码会随登录状态更新。</p></div><div v-if="!status.login_scanned" class="login-qr"><button class="text-button qr-refresh" :disabled="qrRefreshing || !connected" :aria-busy="qrRefreshing" aria-label="刷新登录二维码" title="重新获取二维码" @click="refreshQr"><AppIcon name="refresh" :size="20" :class="{ spinning: qrRefreshing }" /></button><img v-if="qr" :src="qr" alt="大肥鱼 QQ 登录二维码" width="180" height="180" /><p v-else class="muted">{{ qrRefreshing ? '正在刷新二维码…' : '等待二维码准备完成…' }}</p><p v-if="qrError" role="alert">{{ qrError }}</p></div></section>
   <div class="overview-grid">
     <section class="card game-card"><div class="card-title"><div class="icon-tile"><AppIcon name="game" :size="23" /></div><ToggleSwitch :model-value="status?.game_mode || false" label="游戏模式" :disabled="!connected || busy" @update:model-value="game" /></div><h2>给游戏腾点空间。</h2><p>暂停本地语音识别、合成、唱歌与桌宠，保留文字聊天和 QQ 连接。</p><ToggleSwitch :model-value="status?.game_mode_auto || false" label="自动检测游戏" :disabled="!connected || busy" @update:model-value="autoGame" /><p class="tiny muted">每4秒检测终末地、无畏契约，全部退出后恢复。手动开启会保留；手动关闭后，本轮游戏不再自动开启。退出后语音按需加载。</p><p v-if="status?.game_mode_status.monitor.error" class="alert warning">游戏检测失败：{{ status.game_mode_status.monitor.error }}，保留上次状态。</p><p v-if="status?.game_mode && status.game_mode_status.release.denied?.length" class="alert warning">部分工作进程未能释放，PID：{{ status.game_mode_status.release.denied.join('、') }}</p><div class="card-foot"><span class="dot" :class="{ gray: !status?.game_mode }" />{{ status?.game_mode ? '游戏模式已开启' : '语音按需处理' }}</div></section>
     <section class="card budget-card">
@@ -67,3 +80,11 @@ async function autoGame(value: boolean) {
   <section class="card connection-card"><div class="section-top"><h2>运行一览</h2><span class="small muted">窗口可随时关闭</span></div><div class="connection-grid"><div><span class="field-caption">QQ 消息连接</span><strong><span class="dot" :class="{ amber: !status?.connected }" />{{ status?.connected ? '已连接' : '尚未就绪' }}</strong></div><div><span class="field-caption">日常模型</span><strong class="model-label">{{ status?.model || '—' }}</strong><span class="tiny muted">{{ status?.model_route === 'relay' ? '中转优先 · 明确拦截时转官方' : '官方连接' }}</span></div><div><span class="field-caption">后台服务</span><strong>{{ status ? Object.values(status.services).filter(Boolean).length : '—' }} <span class="muted normal">/ {{ status ? Object.keys(status.services).length : 0 }} 项运行</span></strong></div></div><div class="runtime-footer"><button class="text-button" @click="$emit('navigate', 'settings')">管理偏好设置<AppIcon name="arrow" :size="16" /></button><button class="text-button danger" :disabled="!connected || busy || !running" @click="stopDialog = true"><AppIcon name="stop" :size="14" />停止运行</button></div></section>
   <ConfirmDialog v-if="stopDialog" title="让大肥鱼休息一下？" detail="将停止本项目的 QQ 小号、聊天和守护服务，并关闭本地语音推理。控制台保留，之后可以重新启动。" confirm-label="停止运行" @cancel="stopDialog = false" @confirm="control('stop')" />
 </template>
+
+<style scoped>
+.login-qr { display:flex; flex-direction:column; align-items:center; gap:10px; max-width:280px; }
+.qr-refresh { align-self:flex-end; padding:6px; }
+.spinning { animation:qr-spin 1s linear infinite; }
+@keyframes qr-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce) { .spinning { animation:none; } }
+</style>
