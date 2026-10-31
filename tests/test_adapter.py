@@ -88,13 +88,14 @@ async def test_shutdown_cancels_pending_friend_space_scan_before_session_close(t
     plugin.groups = SimpleNamespace(close=close_groups)
     plugin.singing = SimpleNamespace(close=close_singing)
     plugin.singing_task = asyncio.create_task(asyncio.Event().wait())
+    plugin.reply_recovery_task = asyncio.create_task(asyncio.Event().wait())
     plugin.workers, plugin.memory_tasks = {}, {}
     for name in ("loop_task", "offline_task", "own_space_task", "activity_task", "followup_task", "expression_task"):
         setattr(plugin, name, None)
     plugin.qzone_task = asyncio.create_task(plugin.check_friend_space())
     await started.wait()
     await plugin.terminate()
-    assert plugin.qzone_task.cancelled() and closed == ["singing", "social"]
+    assert plugin.qzone_task.cancelled() and plugin.reply_recovery_task.cancelled() and closed == ["singing", "social"]
 
 
 @pytest.mark.asyncio

@@ -51,6 +51,7 @@ class QQCompanion(Star):
         self.pending = {}
         self.workers = {}
         self.loop_task = None
+        self.reply_recovery_task = None
         self.social = Social(self)
         self.stickers = StickerLibrary()
         self.media = MediaPipeline(self)
@@ -88,6 +89,7 @@ class QQCompanion(Star):
         except OSError as exc:
             logger.warning('VPet bridge unavailable: %s', type(exc).__name__)
         self.loop_task = asyncio.create_task(self.scheduler())
+        self.reply_recovery_task = asyncio.create_task(self.recover_replies())
         self.singing_task = asyncio.create_task(self.singing.run())
         logger.info("QQ companion loaded; actual sending is controlled by local policy")
 
@@ -549,6 +551,27 @@ class QQCompanion(Star):
             self.media.capture(eid, contact, text[:6000], attachments)
         self.enqueue_reply(contact, eid)
 
+    async def recover_replies(self):
+        # Queue wakeups must not wait for a slow/failed autonomous model call.
+        while True:
+            try:
+                cfg = read_settings()
+                if self.bot and cfg['live'] and not cfg['paused'] and self.reply_queue.ready():
+                    await self.check_messaging()
+                    self.resume_replies()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.store.set('reply_recovery_error', type(exc).__name__)
+            await asyncio.sleep(10)
+
+    def resume_replies(self):
+        self.groups.resume_pending()
+        for contact in self.reply_queue.ready():
+            if not contact.startswith('group:') and contact not in self.workers:
+                self.pending[contact] = self.store.get('reply_job:' + contact)['event']
+                self.workers[contact] = asyncio.create_task(self.drain(contact))
+
     async def scheduler(self):
         billing = RelayBilling(self.store)
         next_backup = time.time()
@@ -564,7 +587,6 @@ class QQCompanion(Star):
         while True:
             try:
                 self.turn_actions.sync()
-                await billing.sync(read_settings())
                 if not self.bot:
                     for platform in self.context.platform_manager.platform_insts:
                         if platform.meta().id == "qq_companion":
@@ -608,6 +630,7 @@ class QQCompanion(Star):
                     next_offline = 0
                     next_own_space = 0
                 if connected:
+                    self.resume_replies()
                     if time.time() >= next_expression:
                         next_expression = time.time() + 600
                         if not self.workers and (
@@ -616,6 +639,7 @@ class QQCompanion(Star):
                             self.expression_task = asyncio.create_task(
                                 self.run_expression()
                             )
+                    await billing.sync(read_settings())
                     await self.groups.probe()
                 if connected and time.time() >= next_own_space:
                     next_own_space = time.time() + 1800
@@ -693,14 +717,6 @@ class QQCompanion(Star):
                     except Exception as exc:
                         self.store.set('last_autopost_error', type(exc).__name__)
                     await self.social.notify_approvals()
-                    for contact in self.reply_queue.ready():
-                        if contact not in self.workers:
-                            self.pending[contact] = self.store.get(
-                                f"reply_job:{contact}"
-                            )["event"]
-                            self.workers[contact] = asyncio.create_task(
-                                self.drain(contact)
-                            )
                     if time.time() >= next_friend_probe:
                         next_friend_probe = time.time() + 300
                         try:
@@ -781,6 +797,9 @@ class QQCompanion(Star):
     async def terminate(self):
         if getattr(self, 'vpet', None):
             await self.vpet.close()
+        if self.reply_recovery_task:
+            self.reply_recovery_task.cancel()
+            await asyncio.gather(self.reply_recovery_task, return_exceptions=True)
         await self.groups.close()
         tasks = (
             list(self.workers.values())

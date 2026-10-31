@@ -7,7 +7,7 @@ class ReplyQueue:
     def __init__(self, store):
         self.store = store
 
-    def enqueue(self, contact, event, now=None):
+    def enqueue(self, contact, event, now=None, *, ttl=900, scope=None):
         now = time.time() if now is None else now
         self.store.set(
             f"reply_job:{contact}",
@@ -15,7 +15,8 @@ class ReplyQueue:
                 "event": event,
                 "attempts": 0,
                 "due": now + 3,
-                "expires": now + 900,
+                "expires": now + ttl,
+                **({"scope": scope} if scope is not None else {}),
             },
         )
 

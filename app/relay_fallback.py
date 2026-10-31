@@ -34,3 +34,17 @@ def relay_filter_error(exc):
         }
         for key in ("code", "type")
     )
+
+
+def relay_connection_error(exc):
+    # Only provider transport errors, not arbitrary application failures.
+    return type(exc).__name__ in {'APIConnectionError', 'APITimeoutError'}
+
+
+def transport_diagnostic(exc):
+    chain, seen = [], set()
+    while exc is not None and id(exc) not in seen and len(chain) < 6:
+        seen.add(id(exc))
+        chain.append(type(exc).__name__)
+        exc = exc.__cause__ or exc.__context__
+    return chain

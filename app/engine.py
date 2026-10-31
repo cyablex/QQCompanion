@@ -19,7 +19,7 @@ from settings import (
 )
 from store import TZ, CHAT_KINDS
 from model_billing import model_rates, usage_cost
-from relay_fallback import relay_blocked, relay_filter_error
+from relay_fallback import relay_blocked, relay_filter_error, relay_connection_error, transport_diagnostic
 from policy import QUOTA_FAREWELL, contact_limit, day_start
 from chat_punctuation import without_decorative_waves
 from conversation_memory import ConversationMemory
@@ -85,16 +85,22 @@ class Engine:
         if route["official"]:
             kwargs["official_fallback"] = True
         usage = None
+        reason = 'filter'
         try:
             response, usage = await asyncio.wait_for(
                 self.generate(system, contexts, **kwargs), MODEL_TASK_TIMEOUT
             )
             filtered = relay_blocked(response)
         except Exception as exc:
+            if relay_connection_error(exc):
+                reason = 'connection'
+                self.store.set('model_transport_error', dict(
+                    at=time.time(), route='official' if route['official'] else cfg.get('model_route', 'official'),
+                    chain=transport_diagnostic(exc)))
             if (
                 route["official"]
                 or cfg.get("model_route", "official") != "relay"
-                or not relay_filter_error(exc)
+                or not (relay_filter_error(exc) or relay_connection_error(exc))
             ):
                 raise
             filtered = True
@@ -116,6 +122,8 @@ class Engine:
             or fresh["paused"]
             or (current and not current())
         ):
+            if reason == 'connection':
+                raise TaskStateChanged('Generation became stale before network fallback')
             raise RuntimeError("Filtered generation became stale before fallback")
         route["official"] = True
         fallback_rid = self.store.reserve(
@@ -126,7 +134,7 @@ class Engine:
         stats = (
             stats if stats.get("day") == day else dict(day=day, attempts=0, succeeded=0)
         )
-        stats.update(attempts=stats["attempts"] + 1, last_at=time.time())
+        stats.update(attempts=stats["attempts"] + 1, last_at=time.time(), reason=reason)
         self.store.set("official_fallback_stats", stats)
         kwargs["official_fallback"] = True
         try:

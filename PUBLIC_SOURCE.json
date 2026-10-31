@@ -204,6 +204,7 @@
     "tests/test_friend_proactive.py",
     "tests/test_game_detection.py",
     "tests/test_game_mode.py",
+    "tests/test_group_recovery.py",
     "tests/test_launch_readiness.py",
     "tests/test_local_voice.py",
     "tests/test_login_qr_refresh.py",
