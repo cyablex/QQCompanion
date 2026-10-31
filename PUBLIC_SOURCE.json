@@ -251,6 +251,7 @@
     "tests/test_singing_pitch.py",
     "tests/test_social.py",
     "tests/test_social_rules.py",
+    "tests/test_song_dialogue.py",
     "tests/test_song_voice_quality.py",
     "tests/test_startup.py",
     "tests/test_task_chat_flow.py",

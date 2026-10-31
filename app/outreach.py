@@ -4,7 +4,7 @@ import random
 from datetime import datetime
 
 from policy import day_start
-from song_offers import key as offer_key, prepare as prepare_offer
+from song_offers import prepare as prepare_offer
 from store import TZ
 
 
@@ -44,7 +44,7 @@ async def assess(engine, contact, cfg, kind, instruction, now):
             return False
         if kind == 'friend_proactive':
             result = dict(result, messages=[' '.join(result['messages'])[:300]])
-        result, offer = prepare_offer(engine, contact, cfg, result, now)
+        result, _offer = prepare_offer(engine, contact, cfg, result, now)
         if not result:
             outcome(engine, cfg, contact, kind, now, 'skipped')
             return False
@@ -62,9 +62,6 @@ async def assess(engine, contact, cfg, kind, instruction, now):
             slot = engine.store.action_count(kind, day_start(moment), contact) + 1
             delivery_key = f"friend_proactive:{cfg['bot_qq']}:{contact}:{moment.strftime('%Y-%m-%d')}:{slot}"
         sent = await engine.deliver(contact, kind, result, key=delivery_key)
-        if sent and offer:
-            # Store only an invitation actually accepted by the transport.
-            engine.store.set(offer_key(cfg, contact), dict(offer, text='\n'.join(result['messages'])))
         outcome(engine, cfg, contact, kind, now, 'sent' if sent else 'cancelled')
         return sent
     except Exception as exc:

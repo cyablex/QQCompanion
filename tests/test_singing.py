@@ -413,6 +413,7 @@ def test_installed_singing_models_use_cache_before_network(tmp_path, monkeypatch
     source.write_bytes(b"source")
     target.write_bytes(b"target")
     environment = dict(os.environ)
+    environment['QQCOMPANION_ROOT'] = str(tmp_path / 'QQCompanion')
     environment.pop("HF_HUB_OFFLINE", None)
     if override is not None:
         environment["HF_HUB_OFFLINE"] = override

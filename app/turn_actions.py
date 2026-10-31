@@ -9,7 +9,7 @@ from self_profile import STATUSES
 from comment_approvals import shown_drafts
 from song_library import normalized
 from creative_projects import CreativeProjects
-from reply_content import independent_chat
+from reply_content import independent_chat, ensure_user_text
 from reply_parser import parse_chat_reply
 from task_state import version as task_version
 
@@ -19,7 +19,7 @@ class InvalidTurn(ValueError):
 
 
 FIELDS = {
-    "song.request": {"title", "artist", "source_url"}, "song.choose": {"song_id"},
+    "song.offer": {"song_id"}, "song.request": {"title", "artist", "source_url"}, "song.choose": {"song_id"},
     "song.status": set(), "song.cancel": set(), "song.list": set(), "song.repeat": set(), "song.accept": {"song_id"},
     "drawing.create": {"brief"}, "drawing.send": {"drawing_id"},
     "profile.signature": {"value"}, "profile.status": {"value"},
@@ -90,9 +90,7 @@ class TurnActions:
                     (contact, cfg["bot_qq"], cfg["owner_qq"], engine.memory_epoch(contact)))]
         origin = self.origin(contact)
         requester = origin["requester"] if origin else contact
-        pending = self.store.get(f"song_pending:{cfg['bot_qq']}:{contact}:{requester}", {})
-        if pending.get("expires", 0) < time.time():
-            pending = {}
+        pending = self.plugin.singing.selection_context(contact, requester, origin['created'] if origin else None)
         request = self.plugin.singing.latest_request(contact, requester)
         data = dict(tasks=rows, songs=self.plugin.singing.library.list()[:40],
                     current_turn=dict(latest=origin.get('latest', origin['text'])[-2000:], batch=origin['text'][-4000:]) if origin else None,
@@ -101,7 +99,7 @@ class TurnActions:
                     approvals=self.approvals(contact, cfg),
                     last_shown=list(self.shown(contact)))
         from song_offers import current as current_offer
-        offer = current_offer(engine, contact, cfg)
+        offer = current_offer(engine, contact, cfg, requester=requester, through=origin['created'] if origin else None)
         data['song_offer'] = {k: offer[k] for k in ('song_id', 'title', 'artist', 'expires')} if offer else None
         # No filesystem locations, other contacts, or user-supplied target identities.
         data["songs"] = [{k: s[k] for k in ("id", "title", "artist", "state")} for s in data["songs"]]
@@ -115,9 +113,12 @@ class TurnActions:
             '例如对方先点歌又问动态风格，应同时登记歌曲动作，并在chat_messages回答风格问题，不能只处理点歌。'
             '没有操作时仍用messages正常聊天，不需要chat_messages。'
             "需要做事必须把动作放进同一个JSON的tasks，不能只口头答应；不需要动作时tasks=[]。"
+            "主动提出给对方听一首现成歌曲时用song.offer(song_id)，先发送带真实歌曲的邀请；对方同意前不播放。"
+            "邀请只提供给定的完整成品，不编造前30秒试听、新旧对比或还未制作的版本；正文不另写未登记的听歌邀请。"
+            "回答与该邀请有关的追问后若仍邀请对方听同一首，可再次用song.offer接续；换话题则正常聊，不自动播放。"
             "当前输入以current_turn为准，旧聊天与旧任务不是新指令；对方换话题后先接当前话题，也别漏掉尚未回答的普通问句。"
             "可用动作，每项含type及对应参数："
-            "song.request(title,artist,source_url可空)；song.choose(song_id)；song.repeat；song.status；song.cancel；song.list；"
+            "song.request(title,artist,source_url可空)；song.choose(song_id)；song.repeat；song.status；song.cancel；song.list；song.offer(song_id)；"
             "drawing.create(brief，200字内)；drawing.send(drawing_id，来自当前对象的实际作品)；"
             "profile.signature(value，60字内)；profile.status(value为在线/元气满满/悠哉哉/想静静/学习中/睡觉中)；"
             "comment.approve(tokens,evidence)；comment.reject(tokens,evidence)；comment.status；task.status(task_id可空)。"
@@ -139,6 +140,7 @@ class TurnActions:
             "待选只在对方确实补充歌名、版本、音源或继续点歌时接续。对方换话题、叫你名字、问动态风格或抱怨没回复时，正常接话，不能把这些话当成歌曲信息。"
             "旧点歌状态只是背景，不是要求当前每轮都点歌；催歌用song.status，不凭旧回复猜任务在执行。"
             "对方明确要把刚才/上次同一首再听一遍或重唱一次，用song.repeat复用本人上次已发送的歌曲和版本，不重新询问已确认的歌手，也不自行换歌。"
+            '旧聊天若提到片段试听或新旧对比，但当前没有对应入口，不再重复承诺；可以说明当前只能听整曲并用song.offer邀请听已存在的完整成品，不反复让对方补已知歌名。'
             '当前有真实song_offer且对方答应听这首时，用{"type":"song.accept","song_id":"邀请中的song_id"}，程序核对实际邀请后发送。'
             "拒绝、换话题、引用他人的答应或邀请已失效时不接续；不能因为有旧邀请就把每轮闲聊变成同意听歌。"
             "补音源链接时沿用当前待选歌名与歌手；取消用song.cancel。"
@@ -153,6 +155,10 @@ class TurnActions:
     @staticmethod
     def decode(response, cfg, through, *, allow_unplanned=False):
         raw = response.strip()
+        try:
+            ensure_user_text(raw)
+        except ValueError as exc:
+            raise InvalidTurn(str(exc)) from exc
         if raw.startswith("```json") or re.match(r"^```\s*\{", raw):
             raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
         try:
@@ -409,6 +415,16 @@ class TurnActions:
                             # a state refresh can finish this turn as text-only.
                             retry_error = exc
                     continue
+                if task['kind'] == 'song.offer':
+                    from engine import DeliveryUnavailable
+                    if isinstance(exc, DeliveryUnavailable):
+                        self.update(task['id'], 'queued', message='听歌邀请尚未发送，等待重试。')
+                        retry_error = exc
+                        continue
+                    receipt = self.store.db.execute("SELECT state FROM actions WHERE id=?", (task['id'] + ':reply',)).fetchone()
+                    if receipt and receipt['state'] in {'sending', 'unknown'}:
+                        self.update(task['id'], 'unknown', message='听歌邀请的发送结果未确认，不自动重发。')
+                        continue
                 if current in {"queued", "running"}:
                     state = "unknown" if current == "running" and task["kind"].startswith("profile.") else "failed"
                     self.update(task["id"], state, message="这次动作没有确认完成。", error=type(exc).__name__)
@@ -472,9 +488,24 @@ class TurnActions:
         singing = self.plugin.singing
         origin = singing.origin(contact)
         intent = action["type"].split(".")[1]
+        if intent == 'offer':
+            from song_offers import prepare
+            invitation, record = prepare(engine, contact, cfg,
+                dict(action='reply', messages=[], song_offer=action.get('song_id'),
+                     revision=turn['revision'], read_through=turn['read_through'],
+                     memory_generation=turn.get('memory_generation')), time.time(),
+                autonomous=False, requester=origin['requester'])
+            if not record:
+                raise ValueError('没有可邀请试听的真实成品。')
+            self.update(task['id'], 'running', message='正在发送听歌邀请，尚未播放歌曲。')
+            sent = await self.acknowledge(engine, contact, turn, task,
+                invitation['messages'][0], song_invitation=record)
+            self.update(task['id'], 'succeeded' if sent else 'failed',
+                message='已发出听歌邀请，等对方同意后再播放。' if sent else '听歌邀请尚未确认发出。')
+            return sent
         if intent == 'accept':
             from song_offers import accept
-            request = accept(engine, contact, cfg, action.get('song_id'), origin.get('latest', origin['text']), turn['read_through'])
+            request = accept(engine, contact, cfg, action.get('song_id'), origin.get('latest', origin['text']), turn['read_through'], requester=origin['requester'])
         elif intent == 'repeat':
             previous = singing.latest_request(contact, origin['requester'])
             if not previous or previous['state'] != 'sent':
@@ -494,8 +525,9 @@ class TurnActions:
             if any(len(v) > (400 if k == "source_url" else 100) for k, v in request.items()):
                 raise ValueError("Song argument too long")
             origin = singing.origin(contact)
-            pending = self.store.get(f"song_pending:{cfg['bot_qq']}:{contact}:{origin['requester']}", {})
-            if pending.get("expires", 0) < time.time():
+            pending = singing.selection_context(contact, origin['requester'], turn['read_through'])
+            from song_offers import acceptance_text
+            if pending.get('stage') == 'offered' and not acceptance_text(origin.get('latest', origin['text'])):
                 pending = {}
             request = singing.validate_request(request, origin["text"], pending)
         else:

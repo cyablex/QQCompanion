@@ -33,6 +33,8 @@ from turn_actions import InvalidTurn
 from chat_context import ChatPromptBuilder
 from reply_parser import EmptyReplyError, parse_chat_reply, parse_decision as parse_structured_reply
 from task_state import version as task_version
+from reply_content import InternalCallError, ensure_user_text
+from song_offers import validate_invitation
 
 log = logging.getLogger("qqcompanion")
 
@@ -205,7 +207,17 @@ class Engine:
         return row[0] if row else 0
 
     def conversation_history(self, contact):
-        return self.store.history(contact)
+        history = []
+        for message in self.store.history(contact):
+            if message['role'] == 'assistant':
+                try:
+                    ensure_user_text(message['content'])
+                except InternalCallError:
+                    # Keep the private original record, but don't teach the model
+                    # to imitate an earlier protocol leak or treat it as execution.
+                    message = dict(message, content='[此前这条回复格式异常，未形成有效操作；以实际任务记录为准。]')
+            history.append(message)
+        return history
 
     async def decision(self, contact, kind, instruction, public=False):
         started = time.perf_counter()
@@ -325,6 +337,7 @@ class Engine:
             reviewing_actions = False
             review_candidate = None
             route = dict(official=False)
+            protocol_retries = 0
             for attempt in range(6):
                 fresh = self.config_reader()
                 if fresh["revision"] != cfg["revision"] or not self.allowed(
@@ -360,6 +373,16 @@ class Engine:
                     response = response.strip().strip("\u200b\ufeff").strip()
                     if not response:
                         raise EmptyReplyError("Model returned only whitespace")
+                    try:
+                        ensure_user_text(response)
+                    except InternalCallError:
+                        if not protocol_retries:
+                            protocol_retries += 1
+                            system += ('\n上一轮输出包含内部调用标记，尚未发送或执行。不要DSML/XML/function调用。'
+                                       '需要操作时按规定的JSON tasks重新输出，普通聊天只输出正文。')
+                            continue
+                        response = ('这次没有接好你的请求，还没有开始新的操作，可以再试一次。' if plain_reply
+                                    else '{"action":"skip","messages":[],"memory":[]}')
                     search = SEARCH_MARK.fullmatch(response) if plain_reply else None
                     followup = FOLLOWUP_MARK.fullmatch(response) if plain_reply else None
                     read = READ_MARK.fullmatch(response) if plain_reply else None
@@ -431,7 +454,10 @@ class Engine:
                                     if reviewing_actions else self.turn_actions.decode(
                                         response, cfg, read_through, allow_unplanned=True)
                                 )
-                            except InvalidTurn as exc:
+                                if reviewing_actions or turn_plan['turn_actions']:
+                                    validate_invitation(turn_plan.get('chat_messages', []) + turn_plan['messages'], self.singing,
+                                        registered=any(t['type'] == 'song.offer' for t in turn_plan['turn_actions']))
+                            except ValueError as exc:
                                 if plan_retries == 0:
                                     plan_retries += 1
                                     system += "\n上一轮计划未通过程序校验：" + str(exc) + "请用完整JSON重新提交正文和tasks，不能把未登记的动作说成已执行。"
@@ -467,8 +493,9 @@ class Engine:
                                 checked = self.turn_actions.decode(response, cfg, read_through)
                                 if checked["turn_actions"] or checked["action"] != "reply":
                                     raise InvalidTurn("聊天恢复不能执行动作。")
+                                validate_invitation(checked['messages'], self.singing)
                                 response = "\n\n".join(checked["messages"])
-                            except InvalidTurn:
+                            except ValueError:
                                 response = "刚才没接好这句话，可以再跟我说一下吗？"
                         result = parse_chat_reply(
                             response, cfg, read_through, contact=contact,
@@ -482,9 +509,8 @@ class Engine:
                         return finish(result)
                     try:
                         decoded = self.parse_decision(response, cfg, read_through)
-                        if kind in {'proactive', 'friend_proactive'} and not decoded.get('song_offer') and re.search(
-                                r'给你唱(?:一首|首)|(?:想不想|要不要)听我唱', '\n'.join(decoded['messages'])):
-                            raise ValueError('唱歌邀请需要可接续的song_offer曲目编号。')
+                        if kind in {'proactive', 'friend_proactive'}:
+                            validate_invitation(decoded['messages'], self.singing, registered=bool(decoded.get('song_offer')))
                         return finish(decoded)
                     except (ValueError, TypeError) as exc:
                         if structured_retries == 0:
@@ -516,6 +542,8 @@ class Engine:
     async def deliver(self, contact, kind, result, key=None):
         if not result or result["action"] == "skip" or not result["messages"]:
             return False
+        for line in result['messages']:
+            ensure_user_text(line)
         key = key or uuid.uuid4().hex
         async with self.send_lock:
             cfg = self.config_reader()
@@ -651,6 +679,9 @@ class Engine:
                     elif options.get("song_file"):
                         history_line = "[已发送歌曲语音] " + line
                     self.store.delivered(key, i, contact, kind, history_line)
+                    if result.get('song_invitation') and i == len(result['messages']) - 1:
+                        from song_offers import remember
+                        remember(self, contact, result['song_invitation'], history_line)
                     mode = "voice" if options.get("voice_file") or options.get("song_file") else "image" if options.get("image_file") else "sticker" if options.get("sticker_id") else "text"
                     self.store.set("last_delivery:" + contact,
                                    dict(mode=mode, message_id=str(receipt["message_id"]), at=time.time()))

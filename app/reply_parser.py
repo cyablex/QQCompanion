@@ -4,6 +4,7 @@ import json
 import time
 from collections.abc import Callable
 
+from reply_content import ensure_user_text
 from local_voice import VOICE_MARK
 from personality import split_reply
 from qq_faces import MARKER as FACE_MARKER
@@ -15,6 +16,7 @@ class EmptyReplyError(ValueError):
 
 
 def parse_decision(response, cfg, read_through):
+    ensure_user_text(response)
     response = response.strip()
     if response.startswith("```json\n") and response.endswith("```"):
         response = response[8:-3].strip()
@@ -24,6 +26,8 @@ def parse_decision(response, cfg, read_through):
     lines = obj.get("messages", [])
     if not isinstance(lines, list) or any(not isinstance(x, str) for x in lines):
         raise ValueError("Invalid message list")
+    for line in lines:
+        ensure_user_text(line)
     lines = [s.strip() for s in lines if s.strip()]
     if len(lines) > 2 or sum(map(len, lines)) > 1200:
         raise ValueError("Message size exceeded")
@@ -59,6 +63,7 @@ def parse_chat_reply(
     recent_sticker: Callable[[], dict] | None = None,
 ):
     """Decode ordinary text and compatible envelopes, retaining media selections."""
+    ensure_user_text(response)
     # Decode a legacy envelope if a model emits one, but normal
     # conversational text no longer depends on JSON parsing.
     try:

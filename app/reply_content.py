@@ -6,6 +6,20 @@ These checks classify model output, never user requests or task authorization.
 import re
 
 
+# These are model protocol tokens, never ordinary chat or executable tasks.
+_INTERNAL_CALL = re.compile(
+    r'<\s*/?\s*(?:[|｜]{1,2}DSML[|｜]{1,2}|tool_calls?\b|function(?:_calls?)?\b|invoke\b)', re.I)
+
+
+class InternalCallError(ValueError):
+    """A model printed a tool-call protocol instead of a supported reply."""
+
+
+def ensure_user_text(text):
+    if _INTERNAL_CALL.search(text):
+        raise InternalCallError('回复含内部调用标记；请用规定的JSON任务或自然正文重新输出。')
+
+
 _QUOTED = re.compile(r'“[^”]*”|‘[^’]*’|"[^"\n]*"|\'[^\'\n]*\'')
 _CLAUSE_END = re.compile(r'[。！？!?；;，,\n]+[ \t]*|(?<!\d)\.(?!\d)[ \t]*')
 ACTION_CLAIM = re.compile(
@@ -49,7 +63,12 @@ def task_narration(text):
     return bool(ACTION_CLAIM.search(checked) or _TASK_STATUS.search(checked))
 
 
-def _legacy_chat(text):
+def _song_invitation(text):
+    checked = _QUOTED.sub('', text)
+    return bool(re.search(r'(?:要不要|想不想|我们|一起|先).{0,24}(?:听|唱)|给你(?:听|唱)|听一耳朵', checked))
+
+
+def _legacy_chat(text, *, inviting=False):
     # A bubble may contain both a task promise and a genuine answer. Keep the
     # latter instead of dropping the complete bubble when one clause is unsafe.
     quotes = [match.span() for match in _QUOTED.finditer(text)]
@@ -63,7 +82,7 @@ def _legacy_chat(text):
     retained = []
     for clause, ending in parts:
         clause = clause.strip()
-        if clause and not task_narration(clause) and not _TASK_ASIDE.fullmatch(clause):
+        if clause and not task_narration(clause) and not _TASK_ASIDE.fullmatch(clause) and not (inviting and _song_invitation(clause)):
             retained.append(clause + ending)
     return ''.join(retained).strip('，,；;\n ')
 
@@ -71,6 +90,8 @@ def _legacy_chat(text):
 def _texts(value):
     if not isinstance(value, list) or any(not isinstance(text, str) for text in value):
         raise ValueError('Reply content must be a list of text bubbles')
+    for text in value:
+        ensure_user_text(text)
     return value
 
 
@@ -83,9 +104,10 @@ def independent_chat(turn):
     tasks = turn.get('turn_actions') or turn.get('tasks', [])
     legacy = _texts(turn.get('messages', []))
     explicit = _texts(turn.get('chat_messages', []))
-    if tasks and any(task_narration(text) for text in explicit):
+    inviting = any(t.get('type') == 'song.offer' for t in tasks)
+    if tasks and any(task_narration(text) or (inviting and _song_invitation(text)) for text in explicit):
         raise ValueError('Independent chat cannot assert task progress or completion')
-    candidates = ([_legacy_chat(text) for text in legacy] if tasks else legacy) + explicit
+    candidates = ([_legacy_chat(text, inviting=inviting) for text in legacy] if tasks else legacy) + explicit
     result, seen = [], set()
     for text in candidates:
         text = text.strip()
