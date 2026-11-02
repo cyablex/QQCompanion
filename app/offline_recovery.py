@@ -6,6 +6,7 @@ import time
 
 from media import MediaPipeline
 from settings import read_settings
+from approval_commands import parse_approval_command
 
 
 def source_key(bot, contact, raw):
@@ -74,7 +75,10 @@ class OfflineRecovery:
         async with self.lock:
             cfg = read_settings()
             comments = getattr(self.plugin.social, "comments", None)
-            approval_floor = comments.needs_history() if comments is not None else None
+            poster = getattr(self.plugin, 'autopost', None)
+            floors = [comments.needs_history() if comments is not None else None,
+                      poster.approval_history_floor() if poster is not None else None]
+            approval_floor = min((value for value in floors if value is not None), default=None)
             report = dict(
                 updated=time.time(),
                 scanned=0,
@@ -162,8 +166,11 @@ class OfflineRecovery:
                         # Approval recovery is independent of ordinary chat's
                         # last-reply boundary: an earlier AI acknowledgment may
                         # have answered the words without performing the action.
-                        await comments.history(messages)
-                        await comments.resume()
+                        if comments is not None:
+                            await comments.history(messages)
+                            await comments.resume()
+                        if poster is not None:
+                            poster.recover_approvals(messages)
                     last_out = -1
                     for index, msg in enumerate(messages):
                         sender = str(
@@ -195,6 +202,7 @@ class OfflineRecovery:
                         text, attachments = message_text(msg)
                         if (
                             (not text and not attachments)
+                            or parse_approval_command(text) is not None
                             or (contact == cfg["owner_qq"] and comments is not None and comments.command(text))
                             or text.startswith("/")
                             or text in {"同意", "拒绝"}

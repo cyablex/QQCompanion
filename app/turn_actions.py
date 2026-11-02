@@ -12,6 +12,7 @@ from creative_projects import CreativeProjects
 from reply_content import independent_chat, ensure_user_text
 from reply_parser import parse_chat_reply
 from task_state import version as task_version
+from approval_commands import parse_approval_command
 
 
 class InvalidTurn(ValueError):
@@ -24,6 +25,7 @@ FIELDS = {
     "drawing.create": {"brief"}, "drawing.send": {"drawing_id"},
     "profile.signature": {"value"}, "profile.status": {"value"},
     "comment.approve": {"tokens", "evidence"}, "comment.reject": {"tokens", "evidence"},
+    "post.approve": {"token", "evidence"}, "post.reject": {"token", "evidence"}, "post.status": set(),
     "task.status": {"task_id"}, "comment.status": set(),
     "creative.create": {"title", "kind"}, "creative.note": {"project_id", "text"},
     "creative.update": {"project_id", "stage", "next_step"},
@@ -98,6 +100,11 @@ class TurnActions:
                     song_request={k: request[k] for k in ("title", "artist", "state", "result", "progress")} if request else None,
                     approvals=self.approvals(contact, cfg),
                     last_shown=list(self.shown(contact)))
+        poster = getattr(self.plugin, 'autopost', None)
+        data['post_drafts'] = [dict(id=r['id'], content=r['content'], state=r['state'], expires=r['expires'])
+                               for r in poster.drafts.rows(cfg)
+                               if poster.drafts.displayed(r) and r['state'] in {'pending', 'approved'}
+                               ] if poster is not None and contact == cfg['owner_qq'] else []
         from song_offers import current as current_offer
         offer = current_offer(engine, contact, cfg, requester=requester, through=origin['created'] if origin else None)
         data['song_offer'] = {k: offer[k] for k in ('song_id', 'title', 'artist', 'expires')} if offer else None
@@ -122,6 +129,9 @@ class TurnActions:
             "drawing.create(brief，200字内)；drawing.send(drawing_id，来自当前对象的实际作品)；"
             "profile.signature(value，60字内)；profile.status(value为在线/元气满满/悠哉哉/想静静/学习中/睡觉中)；"
             "comment.approve(tokens,evidence)；comment.reject(tokens,evidence)；comment.status；task.status(task_id可空)。"
+            "post.approve(token,evidence)；post.reject(token,evidence)；post.status。"
+            "post是发布自己的动态，comment是评论好友的动态，两类草稿编号不能互换。"
+            "批准自己的动态只选post_drafts里的id，不能用comment动作代替；没有对应草稿就询问，不另行创作或发布。"
             "主人私聊还可用creative.create(title,kind为song/comic/reading/other)，creative.note(project_id,text)，"
             "creative.update(project_id,stage为idea/preview/adjust/finished,next_step)，"
             "creative.attach(project_id,kind为song/drawing,asset_id,scope歌曲填空/图片填实际范围)。"
@@ -269,6 +279,14 @@ class TurnActions:
                              else "blocked" if any(a["state"] == "blocked" for a in auth)
                              else "cancelled" if any(a["state"] == "cancelled" for a in auth) else "waiting")
                     self.update(row["id"], state, message="；".join(a["result"] for a in auth))
+            elif row['kind'] in {'post.approve', 'post.reject'}:
+                draft = self.store.db.execute(
+                    'SELECT state,result FROM qzone_post_drafts WHERE id=? AND owner=? AND bot=?',
+                    (json.loads(row['args']).get('token'), row['owner'], row['bot'])).fetchone()
+                if draft:
+                    state = {'approved': 'waiting', 'sending': 'waiting', 'rejected': 'succeeded',
+                             'expired': 'cancelled', 'pending': 'awaiting_input'}.get(draft['state'], draft['state'])
+                    self.update(row['id'], state, message=draft['result'])
             elif row["state"] == "prepared":
                 action = self.store.db.execute("SELECT state FROM actions WHERE id=?", (row["id"] + ":delivery",)).fetchone()
                 if action and action["state"] in {"succeeded", "unknown", "sending"}:
@@ -453,6 +471,8 @@ class TurnActions:
             return await self.profile(contact, engine, turn, task, action, cfg)
         if kind.startswith("comment."):
             return await self.comment(contact, engine, turn, task, action, origin, cfg)
+        if kind.startswith('post.'):
+            return await self.post(contact, engine, turn, task, action, origin, cfg)
         if kind.startswith('creative.'):
             if contact != cfg['owner_qq']:
                 self.update(task['id'], 'rejected', message='共同创作仅限主人私聊。')
@@ -474,7 +494,7 @@ class TurnActions:
             self.update(task['id'], 'succeeded', message=note)
             return await self.acknowledge(engine, contact, turn, task, note)
         self.sync()
-        row = self.store.db.execute("SELECT kind,state,result FROM turn_tasks WHERE contact=? AND requester=? AND bot=? AND generation=? AND id!=? AND kind NOT IN ('task.status','song.status','song.list','comment.status') "
+        row = self.store.db.execute("SELECT kind,state,result FROM turn_tasks WHERE contact=? AND requester=? AND bot=? AND generation=? AND id!=? AND kind NOT IN ('task.status','song.status','song.list','comment.status','post.status') "
                                     + ("AND id=? " if action.get("task_id") else "") + "ORDER BY created DESC LIMIT 1",
                                     (contact, origin["requester"], cfg["bot_qq"], engine.memory_epoch(contact), task["id"],
                                      *([action["task_id"]] if action.get("task_id") else []))).fetchone()
@@ -592,9 +612,19 @@ class TurnActions:
             return await self.acknowledge(engine, contact, turn, task, note)
         if contact != cfg["owner_qq"] or not cfg.get("qzone") or action.get("evidence") != origin.get("latest", origin["text"]):
             raise ValueError("Comment authorization requires current owner source")
+        command = parse_approval_command(origin.get('latest', origin['text']))
+        if command and (command.domain != 'comment' or command.error or command.approve is None
+                        or command.approve != action['type'].endswith('approve')):
+            note = '这条请求不对应评论审批，没有发布评论；动态请按动态草稿处理。'
+            self.update(task['id'], 'rejected', message=note)
+            return await self.acknowledge(engine, contact, turn, task, note)
         tokens = action.get("tokens")
         if not isinstance(tokens, list) or not 1 <= len(tokens) <= 20 or any(not isinstance(t, str) or not re.fullmatch(r"[0-9a-f]{8}", t) for t in tokens):
             raise ValueError("Comment identifiers required")
+        if command and (len(tokens) != 1 or not tokens[0].startswith(command.token)):
+            note = '评论编号与本条命令不一致，没有新增批准。'
+            self.update(task['id'], 'rejected', message=note)
+            return await self.acknowledge(engine, contact, turn, task, note)
         self.update(task["id"], "running", message="正在核对主人批准与实际展示草稿。")
         result = self.plugin.social.comments.capture(contact, "拒绝评论" if action["type"].endswith("reject") else "同意评论",
                     origin["event_id"], origin["source_time"], shown=self.shown(contact), tokens=tokens,
@@ -605,4 +635,38 @@ class TurnActions:
         note = "已拒绝这些评论，不会发布。" if action["type"].endswith("reject") else "已核对并保存批准，等待实际发布和读回确认；现在还不能说已发布。"
         self.update(task["id"], "waiting", message=note)
         self.sync()
+        return await self.acknowledge(engine, contact, turn, task, note)
+
+    async def post(self, contact, engine, turn, task, action, origin, cfg):
+        poster = getattr(self.plugin, 'autopost', None)
+        if contact != cfg['owner_qq'] or poster is None:
+            raise ValueError('Post approval requires the owner private channel')
+        if action['type'] == 'post.status':
+            rows = poster.drafts.rows(cfg)
+            note = '\n'.join(f"[{r['id']}] {r['result']}" for r in rows[:3]) or '没有待发布的动态草稿。'
+            self.update(task['id'], 'succeeded', message=note)
+            return await self.acknowledge(engine, contact, turn, task, note)
+        approve = action['type'] == 'post.approve'
+        token = action.get('token')
+        command = parse_approval_command(origin.get('latest', origin['text']))
+        row = next((r for r in poster.drafts.rows(cfg) if r['id'] == token), None)
+        floor = max(self.store.get(f'offline_ignore_before:{contact}', 0), self.store.get('migration_restored_at', 0))
+        if (action.get('evidence') != origin.get('latest', origin['text'])
+                or not isinstance(token, str) or not re.fullmatch(r'[0-9a-f]{8}', token)
+                or origin['source_time'] <= floor
+                or (command and (command.error or command.domain != 'post' or command.token != token
+                                 or command.approve != approve))):
+            note = '没有取得对应这条动态的有效批准或拒绝，没有发布。'
+        elif not row:
+            note = '没有找到对应的动态草稿；评论编号不能用于发布动态。'
+        else:
+            try:
+                note = poster.drafts.decide(cfg, token, approve, row['content'],
+                                           origin['source_time'], require_displayed=True)
+            except ValueError as exc:
+                note = str(exc)
+            else:
+                self.update(task['id'], 'waiting' if approve else 'succeeded', message=note)
+                return await self.acknowledge(engine, contact, turn, task, note)
+        self.update(task['id'], 'rejected', message=note)
         return await self.acknowledge(engine, contact, turn, task, note)

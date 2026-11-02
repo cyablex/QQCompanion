@@ -16,6 +16,7 @@ from settings import read_settings
 from store import TZ
 from owner_sharing import OwnerSharing
 from post_drafts import PostDrafts
+from approval_commands import parse_approval_command
 
 
 class AutoPosts:
@@ -291,26 +292,65 @@ class AutoPosts:
         cfg = read_settings()
         if contact != cfg['owner_qq']:
             return None
-        if text in {'/待发动态', '/动态草稿'}:
+        command = parse_approval_command(text)
+        if not command or command.domain != 'post':
+            return None
+        if command.error:
+            return command.error
+        if command.approve is None:
             rows = [r for r in self.drafts.rows(cfg) if r['state'] in {'pending', 'approved', 'sending', 'unknown'}]
             return '\n\n'.join(
                 f"动态草稿 [{r['id']}]（{r['state']}）\n{r['content']}\n"
                 + ('含配图，请在控制台设置页核对图片。\n' if json.loads(r['payload']).get('image') else '')
                 + f"批准：/同意动态 {r['id']}\n放弃：/拒绝动态 {r['id']}"
                 for r in rows) or '没有待发动态；没有好内容时会继续安静。'
-        match = re.fullmatch(r'/(同意动态|拒绝动态)\s+([0-9a-f]{8})', text)
-        if not match:
-            return None
-        row = next((r for r in self.drafts.rows(cfg) if r['id'] == match[2]), None)
+        row = next((r for r in self.drafts.rows(cfg) if r['id'] == command.token), None)
         if not row:
             return '没有找到当前账号的这条动态草稿。'
         floor = max(self.store.get(f"offline_ignore_before:{contact}", 0), self.store.get('migration_restored_at', 0))
         if source_time is not None and source_time <= floor:
             return '旧批准不用于发布新动态。'
         try:
-            return self.drafts.decide(cfg, row['id'], match[1] == '同意动态', row['content'], source_time)
+            return self.drafts.decide(cfg, row['id'], command.approve, row['content'], source_time)
         except ValueError as exc:
             return str(exc)
+
+    def approval_history_floor(self):
+        cfg = read_settings()
+        return self.store.db.execute(
+            "SELECT MIN(created) FROM qzone_post_drafts WHERE owner=? AND bot=? "
+            "AND state IN ('pending','approved') AND expires>?",
+            (cfg['owner_qq'], cfg['bot_qq'], time.time())).fetchone()[0]
+
+    def recover_approvals(self, messages):
+        """Recover only exact owner commands for an actually delivered draft.
+
+        Apply the whole chronological batch before the publisher can run, so a
+        later refusal wins. Other historical commands are never replayed.
+        """
+        from offline_recovery import message_text
+
+        cfg = read_settings()
+        floor = max(self.store.get(f"offline_ignore_before:{cfg['owner_qq']}", 0),
+                    self.store.get('migration_restored_at', 0))
+        for raw in sorted(messages, key=lambda m: (m['time'], int(m.get('real_seq') or 0))):
+            sender = str((raw.get('sender') or {}).get('user_id', raw.get('user_id', '')))
+            if sender != cfg['owner_qq'] or not floor < raw['time'] <= time.time() + 60:
+                continue
+            text, attachments = message_text(raw)
+            command = parse_approval_command(text)
+            if (attachments or not command or command.domain != 'post' or command.error
+                    or command.approve is None):
+                continue
+            row = next((r for r in self.drafts.rows(cfg) if r['id'] == command.token), None)
+            if (not row or row['state'] not in {'pending', 'approved'}
+                    or (command.approve and row['state'] == 'approved')):
+                continue
+            try:
+                self.drafts.decide(cfg, row['id'], command.approve, row['content'],
+                                   raw['time'], require_displayed=True)
+            except ValueError:
+                continue
 
     async def publish(self, cfg, key, day, content, payload):
         image = payload.get('image')

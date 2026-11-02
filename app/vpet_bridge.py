@@ -19,6 +19,7 @@ from diary_book import DiaryBook
 from message_channels import route
 from vpet_messages import PetMessages
 import vpet_runtime
+from approval_commands import dispatch_approval
 
 PORT = 8766
 SCENES = {
@@ -86,7 +87,10 @@ class VPetBridge:
             return dict(accepted=True, id=value['id'], confirmation=previous['confirmation'])
         if self.store.db.execute('SELECT 1 FROM events WHERE id=?', (event,)).fetchone():
             return dict(accepted=True, id=value['id'])
-        command = self.engine.personal_command(owner, value['text'].strip())
+        command = await dispatch_approval(self.plugin, owner, value['text'],
+                                          source=event, source_time=time.time())
+        if command is None:
+            command = self.engine.personal_command(owner, value['text'].strip())
         if command is None:
             command = self.engine.admin(owner, value['text'].strip())
         if command is not None:

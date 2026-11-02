@@ -15,6 +15,7 @@ ROOT = Path(os.environ["QQCOMPANION_ROOT"])
 sys.path.insert(0, str(ROOT / "app"))
 
 from autopost import AutoPosts  # noqa: E402
+from approval_commands import dispatch_approval  # noqa: E402
 from conversation_followups import ConversationFollowups  # noqa: E402
 from engine import DeliveryUnavailable, Engine, TaskStateChanged  # noqa: E402
 from friend_proactive import FriendProactive  # noqa: E402
@@ -441,12 +442,17 @@ class QQCompanion(Star):
         text, attachments = MediaPipeline.describe_input(raw, text)
         if not text and not attachments:
             return
-        if contact == cfg['owner_qq'] and (text in {'/待发动态', '/动态草稿'}
-                or text.startswith(('/同意动态 ', '/拒绝动态 '))):
-            draft_reply = self.autopost.draft_command(contact, text, source_time=raw.get('time') or time.time())
-            if draft_reply is not None:
+        draft_reply = await dispatch_approval(self, contact, text,
+            source=source_key(cfg['bot_qq'], contact, raw), source_time=raw.get('time') or time.time())
+        if draft_reply is not None:
+            if contact == cfg['owner_qq']:
                 await self.send_private(contact, draft_reply)
-                return
+            else:
+                await self.engine.deliver(contact, 'reply', dict(action='reply',
+                    messages=[draft_reply], revision=cfg['revision'],
+                    read_through=self.store.last_incoming(contact)),
+                    key=f"approval_denied:{cfg['bot_qq']}:{contact}:{raw.get('message_id')}")
+            return
         if contact == cfg["owner_qq"] and text in {"/发说说", "/说说状态", "/表情库"}:
             if text == "/表情库":
                 answer = "已收集鲸鱼娘表情：" + "、".join(

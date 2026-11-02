@@ -104,6 +104,11 @@ def independent_chat(turn):
     tasks = turn.get('turn_actions') or turn.get('tasks', [])
     legacy = _texts(turn.get('messages', []))
     explicit = _texts(turn.get('chat_messages', []))
+    # An approval's acknowledgement is owned by its durable domain executor.
+    # Legacy prose such as “那颗糖就交出去啦” can imply a public write before
+    # validation. Mixed ordinary answers use the explicit chat_messages field.
+    if any(t.get('type') in {'post.approve', 'post.reject', 'comment.approve', 'comment.reject'} for t in tasks):
+        legacy = []
     inviting = any(t.get('type') == 'song.offer' for t in tasks)
     if tasks and any(task_narration(text) or (inviting and _song_invitation(text)) for text in explicit):
         raise ValueError('Independent chat cannot assert task progress or completion')
