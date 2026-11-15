@@ -85,6 +85,28 @@ async def test_drawing_failure_sends_only_real_ordinary_text(setup, monkeypatch)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('repeat', [True, False])
+async def test_proactive_checks_recent_dated_messages_before_sending(turns, repeat):
+    e = turns
+    now = datetime.now(TZ)
+    e.cfg['proactive'] = True
+    song = ready(e, 'Cry For Me', 'Michita', ())
+    previous = '我把窗边的纸船重新画了一遍。船尾折成一小块蓝色的三角形，水里的倒影像一把合起来的小伞。'
+    old_at = now.timestamp() - 4 * 86400
+    e.store.db.execute('INSERT INTO actions VALUES(?,?,?,?,?,?,?)',
+        ('earlier', '12345', 'proactive', json.dumps([previous]), 'succeeded', old_at, ''))
+    e.store.incoming('old', '12345', '我喜欢听歌', now.timestamp() - 3600)
+    candidate = ('昨晚我把窗边的纸船又画了一遍。船尾折成了蓝色小三角，水里的倒影像一把合起来的小伞。'
+                 if repeat else '今天想起上回聊的歌，有一首现在正好有成品。')
+    e.plan.update(messages=[candidate], song_offer=song['id'])
+    assert await e.engine.proactive(now) is not repeat
+    assert previous in e.calls[0][1][-1]['content']
+    assert datetime.fromtimestamp(old_at, TZ).isoformat(timespec='minutes') in e.calls[0][1][-1]['content']
+    assert len(e.sent) == (0 if repeat else 1)
+    assert bool(e.store.get(offer_key(e.cfg, '12345'))) is not repeat
+
+
+@pytest.mark.asyncio
 async def test_song_invitation_is_real_but_audio_waits_for_acceptance(turns, monkeypatch):
     e = turns
     ready(e)
@@ -131,7 +153,7 @@ async def test_song_acceptance_cannot_use_an_unrelated_or_unconfirmed_offer(turn
         e.store.message('12345', 'assistant', '聊聊午饭。', now - 10)
     if cause != 'unknown_delivery':
         e.store.set(offer_key(e.cfg, '12345'), offer)
-    incoming(e, '不要唱' if cause == 'refusal' else '好呀，唱吧')
+    incoming(e, {'refusal': '不要唱', 'wrong_song': '好呀'}.get(cause, '好呀，唱吧'))
     task(e, 'song.accept', song_id='f' * 32 if cause == 'wrong_song' else song['id'])
     await e.engine.reply('12345')
     assert not any(m[2].get('song_file') for m in e.sent)

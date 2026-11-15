@@ -7,6 +7,12 @@ import time
 from song_library import normalized
 
 
+_EXPLICIT_ACCEPTANCE = re.compile(
+    r'(?:(?:好[呀啊哦]?|行[呀啊哦]?)[，,]\s*)?'
+    r'(?:可以(?:给我)?唱|给我唱|唱吧|我?想听(?:这首)?|听一下)[啊呀吧啦哦]*'
+)
+
+
 def key(cfg, contact):
     return f"song_offer:{cfg['bot_qq']}:{contact}"
 
@@ -99,6 +105,19 @@ def acceptance_text(latest):
     # refusals/quotations from inheriting a previously offered song.
     return bool(latest.strip()) and not re.search(
         r'不(?:要|想|用|听|唱|行|可以)|别(?:唱|发)|拒绝|假如|如果|[“”「」"]', latest)
+
+
+def explicitly_accepts(latest, previous, title):
+    """Match clear consent in the current reply to a delivered invitation."""
+    if not acceptance_text(latest) or re.search(r'[？?]', latest):
+        return False
+    if _EXPLICIT_ACCEPTANCE.fullmatch(latest.strip(' \t。！!~～')):
+        return True
+    # A follow-up about liking this same song can arrive before the turn runs.
+    title = re.escape(normalized(title))
+    return bool(title and _EXPLICIT_ACCEPTANCE.fullmatch(previous.strip(' \t。！!~～'))
+                and re.fullmatch(rf'(?:正好)?我?(?:也|很|特别)?喜欢(?:这首)?{title}(?:这首)?(?:歌)?',
+                                 normalized(latest)))
 
 
 def accept(engine, contact, cfg, ident, latest, through, *, requester=None):

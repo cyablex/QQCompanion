@@ -1,5 +1,6 @@
 # ruff: noqa: E402
 import copy
+import json
 import sys
 import time
 from pathlib import Path
@@ -46,7 +47,7 @@ def env(tmp_path, monkeypatch):
                 uin=11111,
                 name="visitor",
                 tid=1,
-                content="hello",
+                content="这幅画是你画的吗？",
                 create_time=now - 30,
                 list_3=[],
             )
@@ -58,7 +59,8 @@ def env(tmp_path, monkeypatch):
 
     async def generate(system, contexts, **kwargs):
         prompts.append((system, contexts))
-        return "你好呀", None
+        return json.dumps(dict(addressed_to_me=True, needs_answer=True,
+                               reason='向动态作者提问', content='你好呀')), None
 
     engine = Engine(store, generate, None, lambda: cfg)
 
@@ -71,21 +73,23 @@ def env(tmp_path, monkeypatch):
         async def get_detail(self, post):
             return SimpleNamespace(ok=True, data=copy.deepcopy(raw))
 
-        async def reply(self, post, target, content):
+        async def reply(self, post, target, content, **routing):
             calls.append((post.tid, target.tid, target.uin, content))
+            self.routing.append(routing)
             root = next(c for c in raw["commentlist"] if c["tid"] == target.tid)
             root["list_3"].append(
                 dict(
                     uin=67890,
                     name="fish",
                     tid=100 + len(calls),
-                    content=content,
+                    content=f'@{{uin:{target.uin},nick:visitor,who:1,auto:1}}' + content,
                     create_time=int(time.time()),
                 )
             )
             return SimpleNamespace(ok=True, data=dict(tid=str(100 + len(calls))))
 
     api = Api()
+    api.routing = []
     plugin = SimpleNamespace(
         store=store,
         engine=engine,
@@ -98,12 +102,14 @@ def env(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_scheduled_own_comments_wait_half_hour_across_restart(env):
+async def test_scheduled_space_questions_wait_one_hour_without_online_transition(env):
     cfg, store, raw, api, feature, calls, prompts = env
     assert (await feature.run(scheduled=True))["posts"] == 1
     assert (await feature.run(scheduled=True))["waiting"]
     assert (await OwnSpace(feature.plugin).run(scheduled=True))["waiting"]
-    store.set("own_space_scan_at:67890", time.time()-1801)
+    store.set("own_space_scan_at:67890", time.time()-601)
+    assert (await feature.run(scheduled=True))['waiting']
+    store.set("own_space_scan_at:67890", time.time()-3601)
     assert (await feature.run(scheduled=True))["posts"] == 1
     assert len(calls) == 1
 
@@ -116,19 +122,23 @@ async def test_root_and_nested_replies_even_same_generated_text_no_private_conte
             uin=22222,
             name="second",
             tid=2,
-            content="hi",
+            content="@{uin:67890,nick:fish,who:1,auto:1}这是什么颜色？",
             create_time=int(time.time()) - 10,
         )
     ]
     store.incoming("secret", "12345", "PRIVATE SECRET")
     store.remember("12345", "PRIVATE MEMORY")
     report = await feature.run()
-    assert report["replied"] == 2 and len(calls) == 2
+    # Answering the first question changed this thread. Refresh its context
+    # before answering the second, rather than using a stale generated answer.
+    assert report['replied'] == 1 and report['pending'] == 1
+    await feature.run()
+    assert len(calls) == 2
     assert calls[1][1:3] == (1, 22222)  # thread root and nested target author
     assert "PRIVATE" not in str(prompts)
     assert store.sent_count(0, kinds=("reply", "proactive")) == 0
     await feature.run()
-    assert len(calls) == 2 and len(prompts) == 2  # includes self comments in readback
+    assert len(calls) == 2 and len(prompts) == 3  # one stale draft was discarded before refresh
 
 
 @pytest.mark.asyncio
@@ -194,13 +204,14 @@ async def test_budget_failure_remains_pending(env):
 
 
 @pytest.mark.asyncio
-async def test_uninteresting_comment_skips_once_without_public_send(env):
+async def test_ordinary_feedback_skips_once_without_public_send(env):
     cfg, store, raw, api, feature, calls, prompts = env
     decisions = []
+    raw['commentlist'][0]['content'] = '画得真好看'
 
     async def generate(system, contexts, **kwargs):
         decisions.append(system)
-        return "[skip]", None
+        return json.dumps(dict(addressed_to_me=True, needs_answer=False, reason='普通反馈，无需回答', content='')), None
 
     feature.plugin.engine.generate = generate
     first = await feature.run()
@@ -208,7 +219,7 @@ async def test_uninteresting_comment_skips_once_without_public_send(env):
     assert first["skipped"] == 1 and first["pending"] == 0
     assert second["skipped"] == 0
     assert len(decisions) == 1 and not calls
-    assert "大多数" in decisions[0] and "必须回应" not in decisions[0]
+    assert '不是只检测问号' in decisions[0] and '明确问你就应回应' in decisions[0]
 
 
 @pytest.mark.asyncio
@@ -217,7 +228,7 @@ async def test_skip_during_config_change_is_not_committed(env):
 
     async def generate(*args, **kwargs):
         cfg["revision"] += 1
-        return "[skip]", None
+        return json.dumps(dict(addressed_to_me=True, needs_answer=False, reason='收尾', content='')), None
 
     feature.plugin.engine.generate = generate
     await feature.run()

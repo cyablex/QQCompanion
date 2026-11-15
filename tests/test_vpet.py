@@ -72,10 +72,10 @@ def test_game_mode_closes_only_owned_pet_and_restores_requested_state(tmp_path, 
     monkeypatch.setattr(settings, 'ROOT', tmp_path)
     monkeypatch.setattr(game_mode, 'ROOT', tmp_path)
     stopped, starts = [], []
-    own = SimpleNamespace(pid=1, info={'exe': str(tmp_path / 'vpet/host/DafeiyuPet.exe')},
+    own = SimpleNamespace(pid=1, exe=lambda: str(tmp_path / 'vpet/host/DafeiyuPet.exe'),
                           terminate=lambda: stopped.append(1), wait=lambda timeout: None, children=lambda recursive: [])
-    other = SimpleNamespace(pid=2, info={'exe': str(tmp_path / 'other/DafeiyuPet.exe')})
-    monkeypatch.setattr(vpet_runtime.psutil, 'process_iter', lambda _: [own, other])
+    other = SimpleNamespace(pid=2, exe=lambda: str(tmp_path / 'other/DafeiyuPet.exe'))
+    monkeypatch.setattr(vpet_runtime, 'named_processes', lambda _: [own, other])
     monkeypatch.setattr(game_mode, 'close_local_voice', lambda: dict(stopped=[3], denied=[]))
     cfg = dict(revision=1, game_mode=False)
     atomic_json(tmp_path / 'config/vpet.json', dict(enabled=True))

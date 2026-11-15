@@ -10,6 +10,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('nested', [False, True])
+async def test_reply_request_keeps_root_comment_identity_separate_from_recipient(nested):
+    from qzone_vendor.core.qzone.api import QzoneAPI
+    from qzone_vendor.core.model import Comment, Post
+
+    requests = []
+
+    async def context():
+        return SimpleNamespace(uin=67890, gtk2=123)
+
+    async def request(method, url, **kwargs):
+        requests.append(kwargs['data'])
+        return {'code': 0}
+
+    api = QzoneAPI.__new__(QzoneAPI)
+    api.session = SimpleNamespace(get_ctx=context)
+    api.request = request
+    target = Comment(uin=22222 if nested else 11111, nickname='visitor', tid=1,
+                     content='question', create_time=1)
+    routing = dict(comment_uin=11111, reply_uin=22222, reply_nick='visitor') if nested else {}
+    assert (await api.reply(Post(uin=33333, tid='post'), target, 'answer', **routing)).ok
+    assert requests[0]['commentId'] == 1 and requests[0]['commentUin'] == 11111
+    assert requests[0]['hostUin'] == 33333
+    assert requests[0]['content'] == ('@{uin:22222,nick:visitor,who:1,auto:1}answer' if nested else 'answer')
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("data", [None, [], {}])
 async def test_like_success_with_null_or_array_data_does_not_crash(data):
     from qzone_vendor.core.qzone.client import QzoneHttpClient

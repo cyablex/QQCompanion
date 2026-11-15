@@ -8,6 +8,7 @@ from pathlib import Path
 
 import psutil
 
+from process_snapshot import named_processes
 from settings import ROOT, atomic_json, read_settings
 
 
@@ -23,11 +24,11 @@ def executable(root=ROOT):
 
 
 def processes(root=ROOT):
-    target = str(executable(root)).casefold()
+    target = executable(root)
     found = []
-    for process in psutil.process_iter(['exe']):
+    for process in named_processes({target.name}):
         try:
-            if str(Path(process.info['exe'] or '').resolve()).casefold() == target:
+            if str(Path(process.exe()).resolve()).casefold() == str(target).casefold():
                 found.append(process)
         except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
             continue

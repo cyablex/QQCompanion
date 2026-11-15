@@ -15,8 +15,8 @@ from personality import build_personality
 from public_novelty import history_context, is_novel, recent_public
 from settings import ROOT, atomic_json
 from store import TZ
+from whale_drawing import MOODS, POSES, VIEWS, place_whale
 
-MOODS = {"开心", "好奇", "专注", "平静", "低落", "困倦"}
 DRAWING_MARK = re.compile(r"\[画画[:：]([^\]\r\n]{1,200})\]")
 MOOD_MARK = re.compile(r"\[心情[:：](开心|好奇|专注|平静|低落|困倦)\]")
 
@@ -32,9 +32,10 @@ polygon 用 points=[[x,y],...]；line 用 points；arc 用 box、start、end（�
 bezier 用4、7、10至25个points，每3个点为一段三次曲线的两个控制点和终点，closed=true可闭合填色。
 text 用 at=[x,y]、text（最多30字）、size（12至70）。图形可用fill、stroke和width（1至16）。
 画自己时必须使用普通鲸鱼，不画鲸鱼娘、人脸、蓝发女仆、人体或人形四肢。QQ人设外观不等于这套简笔画的画法。
-鲸鱼可用完整角色图元：{"type":"whale","box":[左,上,右,下],"facing":"right","mood":"平静","fill":"#75bdea","fill2":"#449ccc"}。
-facing为left/right；mood沿用允许的六种心情。身体、尾鳍、胸鳍和五官由本地统一连接定位，不另画一个悬空头。
-鲸鱼图元可加shape（round圆胖/slender修长）、pose（level平游/up抬头/down低头）、fin（relaxed自然/wave挥鳍），每幅按动作与心情选择，不要总用同一轮廓。也可直接用group、bezier等画完整普通鲸鱼，自由改变轮廓、姿势和五官，须保持身体、尾鳍与五官相连。
+动笔前先想她正在做什么、从哪里看她，以及她和物件的位置关系。参考 recent_drawings 和 recent_whales 里的实际作品，换动作、观看角度或主体在画面里的位置；只换背景、颜色、左右朝向会画得很像。
+可以用group、bezier自由画出完整鲸鱼，尤其适合图元里没有的姿势。头和身体共用一条轮廓，五官放在头端，尾鳍和胸鳍连在身上。保留自然比例和柔和配色。
+也可用完整角色图元：type=whale，box是给她留的范围，身体等比例放入框中。view可选side（侧面）、angled（斜侧面，能看到两只眼睛）、front（正面，胸鳍向两侧）。根据画面选择；角度不限时可以不填，由程序参考近期作品选一个。
+pose选level（平游或趴着）、up（抬头向上）、down（俯冲或低头）、curl（真把尾巴向身体卷起，适合蜷着休息）。facing为left/right；mood沿用六种心情，shape可选round/slender，fin可选relaxed/wave。可用fill、fill2配色。动作需要尾巴卷起时用curl或自画轮廓，别只画一条平游鲸鱼再配文字。
 画到自己时加self_portrait=true；可用whale或自己组合的完整鲸鱼group，其它题材不需要。
 text的at是文字左上角，不是基线；文字高度大约占size×1.5个纵向坐标单位，牌子中的文字要留足上下边距。
 颜色为#RRGGBB；无需填充用fill=null。线条使用stroke。可选background2作背景渐变，图形fill2作柔和渐变，shadow=false关阴影；style可选soft（默认）或flat。只有这些图元，不输出代码、SVG或网址。
@@ -48,7 +49,7 @@ caption不超过120字，只描述这幅作品或创作想法，不捏造现实�
 """
 
 
-def parse_scene(raw):
+def parse_scene(raw, *, recent_whales=None, autonomous=False):
     value = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip()))
     if not isinstance(value, dict) or value.get("action") not in {"draw", "skip"}:
         raise ValueError("Invalid drawing decision")
@@ -56,6 +57,12 @@ def parse_scene(raw):
         return value
     if not all(isinstance(value.get(k), str) and value[k].strip() for k in ("title", "caption")):
         raise ValueError("Drawing needs a title and caption")
+    if recent_whales is not None:
+        whales = list(scene_whales(value.get("elements")))
+        if len(whales) == 1:
+            if value.get("mood") in MOODS:
+                whales[0].setdefault("mood", value["mood"])
+            choose_whale_view(whales[0], recent_whales, autonomous)
     elements = flatten_elements(value.get("elements"))
     def connected(items):
         return any(i.get('type') == 'whale' or (i.get('type') == 'group' and
@@ -121,13 +128,14 @@ def flatten_elements(elements, bounds=(0, 0, 1000, 1000), depth=0):
     for item in elements:
         if not isinstance(item, dict):
             raise ValueError("Invalid drawing element")
-        if item.get('type') == 'whale':
-            result.extend(flatten_elements([dict(type='group', box=item.get('box'), elements=whale_elements(item))], bounds, depth))
-        elif item.get("type") == "group":
+        if item.get("type") in ("group", "whale"):
             box = transform(item.get("box"))
             if len(box) != 4 or box[0] >= box[2] or box[1] >= box[3]:
                 raise ValueError("Invalid drawing group bounds")
-            result.extend(flatten_elements(item.get("elements"), box, depth + 1))
+            if item["type"] == "whale":
+                result.extend(place_whale(item, box))
+            else:
+                result.extend(flatten_elements(item.get("elements"), box, depth + 1))
         else:
             placed = dict(item)
             for field in ("box", "at"):
@@ -143,53 +151,34 @@ def flatten_elements(elements, bounds=(0, 0, 1000, 1000), depth=0):
     return result
 
 
-def whale_elements(item):
-    """One connected silhouette, with face and fins anchored to the same body."""
-    if item.get('facing', 'right') not in {'left', 'right'} or item.get('mood', '平静') not in MOODS:
-        raise ValueError('Invalid whale pose')
-    ink = item.get('stroke', '#30465c')
-    body = [[240,480],[180,390],[90,390],[50,280],[40,420],[110,520],[160,560],
-            [90,550],[35,600],[40,700],[120,710],[200,650],[250,630],
-            [340,830],[780,810],[910,610],[990,350],[760,180],[520,270],[360,300],[260,370],[240,480]]
-    parts = [dict(type='bezier', points=body, closed=True, fill=item.get('fill', '#75bdea'),
-                  fill2=item.get('fill2', '#469dce'), stroke=ink, width=3),
-             dict(type='bezier', points=[[300,620],[450,780],[770,760],[870,590],[720,680],[450,690],[300,620]],
-                  closed=True, fill='#e7f5fc', stroke=None, shadow=False),
-             dict(type='bezier', points=[[550,590],[580,660],[600,740],[680,745],[705,680],[660,610],[620,575]],
-                  closed=True, fill=item.get('fill', '#75bdea'), stroke=ink, width=3, shadow=False),
-             dict(type='ellipse', box=[747,432,788,481], fill='#253c55', stroke=None, shadow=False),
-             dict(type='ellipse', box=[758,440,770,454], fill='#ffffff', stroke=None, shadow=False),
-             dict(type='ellipse', box=[798,491,853,514], fill='#efaeba', stroke=None, shadow=False),
-             dict(type='bezier', points=[[775,528],[805,553],[834,548],[850,522]], stroke=ink, width=3)]
-    if item.get('mood') in {'困倦', '平静'}:
-        parts[3:5] = [dict(type='bezier', points=[[745,460],[760,474],[779,474],[791,458]], stroke=ink, width=4)]
-    shape = item.get('shape', 'round')
-    pose = item.get('pose', 'level')
-    fin = item.get('fin', 'relaxed')
-    if shape not in {'round', 'slender'} or pose not in {'level', 'up', 'down'} or fin not in {'relaxed', 'wave'}:
-        raise ValueError('Invalid whale variation')
-    if fin == 'wave':
-        parts[2]['points'] = [[550,590],[480,510],[450,440],[490,420],[550,450],[610,520],[620,575]]
-    def vary(x, y):
-        # One affine transform moves silhouette, face and fins together.
-        height = .72 if shape == 'slender' else 1
-        slope = -.13 if pose == 'up' else .13 if pose == 'down' else 0
-        return [x, 500 + (y - 500) * height + (x - 500) * slope]
-    for part in parts:
-        if 'points' in part:
-            part['points'] = [vary(x, y) for x, y in part['points']]
-        if 'box' in part:
-            x1, y1, x2, y2 = part['box']
-            corners = [vary(x, y) for x in (x1, x2) for y in (y1, y2)]
-            part['box'] = [x1, min(p[1] for p in corners), x2, max(p[1] for p in corners)]
-    if item.get('facing') == 'left':
-        for part in parts:
-            if 'points' in part:
-                part['points'] = [[1000 - x, y] for x, y in part['points']]
-            if 'box' in part:
-                left, top, right, bottom = part['box']
-                part['box'] = [1000 - right, top, 1000 - left, bottom]
-    return parts
+def scene_whales(elements, depth=0):
+    if not isinstance(elements, list) or depth > 3:
+        return
+    for item in elements:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "whale":
+            yield item
+        elif item.get("type") == "group":
+            yield from scene_whales(item.get("elements"), depth + 1)
+
+
+def whale_look(whale):
+    return dict(view=whale.get("view", "side"), pose=whale.get("pose", "level"))
+
+
+def choose_whale_view(whale, recent, autonomous):
+    look = whale_look(whale)
+    if "view" in whale and not (autonomous and look in recent):
+        return
+    # Moving the most recently used views to the end preserves the action
+    # and gives a fresh viewpoint. An explicit private request takes priority.
+    choices = ["angled", "front", "side"] if look["pose"] in ("level", "curl") else ["side", "angled"]
+    for old in reversed(recent):
+        if old["view"] in choices:
+            choices.remove(old["view"])
+            choices.append(old["view"])
+    whale["view"] = choices[0]
 
 
 def gradient(size, top, bottom):
@@ -319,6 +308,26 @@ class Sketchbook:
             return ""
         return "\n你实际画完并保存的简笔画（不表示已发送或发布）：" + json.dumps([{k: r[k] for k in ("id", "title", "caption", "created")} for r in rows[-3:]], ensure_ascii=False)
 
+    def recent_whale_looks(self, cfg, contact, rows):
+        recent = []
+        folder = self.folder(cfg, contact)
+        for row in reversed(rows[-10:]):
+            ident = str(row.get("id", ""))
+            if not re.fullmatch(r"[0-9a-f]{32}", ident) or not (folder / (ident + ".png")).is_file():
+                continue
+            try:
+                scene = json.loads((folder / (ident + ".json")).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            whales = list(scene_whales(scene.get("elements"))) if isinstance(scene, dict) else []
+            if len(whales) == 1:
+                look = whale_look(whales[0])
+                if look["view"] in VIEWS and look["pose"] in POSES:
+                    recent.append(look)
+                    if len(recent) == len(VIEWS):
+                        break
+        return recent
+
     async def create(self, engine, cfg, brief="", contact=None):
         cfg = dict(cfg)
         if not cfg.get("autonomous_drawing") or cfg.get("paused") or not cfg.get("live"):
@@ -333,9 +342,15 @@ class Sketchbook:
                 system += history_context(public_history)
             else:
                 system += "这是给当前好友的想象简笔画。没有明确提供的外貌、衣着和物件只算创作设定，不是对对方现实特征的判断，caption要分清想象与事实。"
-            payload = {"brief": brief or "随兴画一幅自己想画的画，可以只是舒服、放松、开心的画面；没有想画的也可以skip。画完不必分享，不为凑动态或找人聊天而画。", "recent_titles": [r["title"] for r in self.records(cfg, contact)[-6:]]}
+            drawings = self.records(cfg, contact)
+            recent_whales = self.recent_whale_looks(cfg, contact, drawings)
+            payload = dict(
+                brief=brief or "随兴画一幅自己想画的画，可以只是舒服、放松、开心的画面；没有想画的也可以skip。画完不必分享，不为凑动态或找人聊天而画。",
+                recent_drawings=[dict(title=r["title"], composition=r.get("composition", "")) for r in drawings[-6:]],
+                recent_whales=recent_whales,
+            )
             raw = await engine.generate_aux("drawing", system, [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}], contact=contact)
-            scene = parse_scene(raw)
+            scene = parse_scene(raw, recent_whales=recent_whales, autonomous=contact is None)
             fresh = engine.config_reader()
             if scene["action"] == "skip" or fresh["revision"] != cfg["revision"] or fresh.get("paused") or not fresh.get("live") or not fresh.get("autonomous_drawing"):
                 return None

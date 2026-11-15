@@ -263,16 +263,33 @@ class Engine:
                 system += '\n本轮主人通过桌面形象与你交流，和QQ共用此前的相处记录。回复会回到桌宠；继续自然接话和执行已接通的动作，不要求主人为同一件事回QQ重新说。'
         activity_query = prompt.query
         plain_reply, outreach = prompt.plain_reply, prompt.outreach
+        accepted_offer = (
+            self.turn_actions.explicit_offer_action(contact, self, cfg, read_through)
+            if plain_reply and self.turn_actions else None
+        )
+        if accepted_offer:
+            system += ('\n本轮用户已明确同意实际送达的歌曲邀请，歌曲由程序登记。'
+                       '如提交歌曲动作，只用' + json.dumps(accepted_offer, ensure_ascii=False)
+                       + '。独立聊天正常回应；不要再次邀请、问版本或描述发送状态。')
         wave_blocked = prompt.wave_blocked
         web_sources = []
         context_seconds = time.perf_counter() - started
         slot_seconds = generation_seconds = 0.0
 
-        def finish(result):
+        def finish(result=None):
+            if result is None:
+                result = dict(action='reply', messages=[], memory=[], revision=cfg['revision'],
+                              read_through=read_through, turn_finalized=True)
             if task_epoch is not None:
                 result['task_epoch'] = task_epoch
             if not public:
                 result["memory_generation"] = memory_generation
+            actions = result.get('turn_actions', [])
+            if accepted_offer:
+                if result['action'] == 'skip':
+                    result['messages'] = []
+                other_actions = [task for task in actions if not task['type'].startswith('song.')]
+                result.update(action='reply', turn_actions=[*other_actions[:7], accepted_offer])
             if outreach and result.get("share_drawing") and not result.get("drawing_brief") and cfg.get("autonomous_drawing"):
                 candidates = self.sketchbook.records(cfg) + self.sketchbook.records(cfg, contact)
                 for drawing in sorted(candidates, key=lambda row: row.get("created", 0), reverse=True):
@@ -367,7 +384,7 @@ class Engine:
                     try:
                         response, usage, rid = await self._generate_reserved(
                             cfg, kind, call_system, call_contexts,
-                            "json" if reviewing_actions or not plain_reply else "text", rid,
+                            "json" if not plain_reply or (not chat_only and (reviewing_actions or plan_retries)) else "text", rid,
                             input_size * 2 / 1_000_000 + MODEL_MAX_OUTPUT_TOKENS * 8 / 1_000_000,
                             route, lambda: self.store.last_incoming(contact) == read_through and (public or self.memory_epoch(contact) == memory_generation),
                         )
@@ -389,6 +406,8 @@ class Engine:
                             system += ('\n上一轮输出包含内部调用标记，尚未发送或执行。不要DSML/XML/function调用。'
                                        '需要操作时按规定的JSON tasks重新输出，普通聊天只输出正文。')
                             continue
+                        if accepted_offer:
+                            return finish()
                         response = ('这次没有接好你的请求，还没有开始新的操作，可以再试一次。' if plain_reply
                                     else '{"action":"skip","messages":[],"memory":[]}')
                     search = SEARCH_MARK.fullmatch(response) if plain_reply else None
@@ -468,7 +487,9 @@ class Engine:
                             except ValueError as exc:
                                 if plan_retries == 0:
                                     plan_retries += 1
-                                    system += "\n上一轮计划未通过程序校验：" + str(exc) + "请用完整JSON重新提交正文和tasks，不能把未登记的动作说成已执行。"
+                                    system += ('\n上一轮计划未通过程序校验：' + str(exc)
+                                               + '请只输出一个完整JSON对象：{"action":"reply","messages":[],"tasks":[],"chat_messages":[]}。'
+                                               '按本轮实际需要填正文和tasks，执行结果由程序回复。')
                                     continue
                                 log.warning("turn_format_recovery reason=%s", str(exc))
                                 chat_only = True
@@ -482,11 +503,16 @@ class Engine:
                                     public=public, now=datetime.now(TZ),
                                 ).system
                                 system += (
-                                    "\n本轮只恢复聊天，不执行任何操作。直接接住对方最后的话，输出自然正文；"
+                                    "\n直接接住对方的话，输出自然正文。"
                                     "不要JSON、任务计划或内部故障说明，不重复历史报错。"
-                                    "如果对方确实请求操作，如实说明这次尚未开始，可以再试；普通闲聊正常回应。"
                                     "不承诺或声称操作已执行，也不输出绘图、心情或其他执行标记。"
                                 )
+                                if accepted_offer:
+                                    system += ("歌曲确认已由程序处理，不在正文里提歌的状态。"
+                                               "只回应同一批消息里独立的聊天内容；没有就只输出[无独立聊天]。")
+                                else:
+                                    system += ("本轮只恢复聊天。如果对方确实请求操作，如实说明这次尚未开始，"
+                                               "可以再试；普通闲聊正常回应。")
                                 continue
                             if turn_plan["turn_actions"] or turn_plan["action"] == "skip":
                                 return finish(turn_plan)
@@ -497,6 +523,8 @@ class Engine:
                                 continue
                             response = "\n\n".join(turn_plan["messages"])
                         if chat_only:
+                            if accepted_offer and response == '[无独立聊天]':
+                                return finish()
                             try:
                                 checked = self.turn_actions.decode(response, cfg, read_through)
                                 if checked["turn_actions"] or checked["action"] != "reply":
@@ -504,6 +532,8 @@ class Engine:
                                 validate_invitation(checked['messages'], self.singing)
                                 response = "\n\n".join(checked["messages"])
                             except ValueError:
+                                if accepted_offer:
+                                    return finish()
                                 response = "刚才没接好这句话，可以再跟我说一下吗？"
                         result = parse_chat_reply(
                             response, cfg, read_through, contact=contact,
@@ -532,14 +562,16 @@ class Engine:
                                            revision=cfg["revision"], read_through=read_through))
                 except BaseException as exc:
                     self.store.settle(rid, state="failed_or_unknown")
-                    if empty_retries == 0 and attempt < 2 and (
-                        isinstance(exc, EmptyReplyError)
-                        or type(exc).__name__ == "EmptyModelOutputError"
-                    ):
-                        empty_retries += 1
-                        continue
+                    if isinstance(exc, EmptyReplyError) or type(exc).__name__ == "EmptyModelOutputError":
+                        if empty_retries == 0 and attempt < 2:
+                            empty_retries += 1
+                            continue
+                        if accepted_offer:
+                            return finish()
                     raise
 
+        if accepted_offer:
+            return finish()
         return finish(dict(action="reply", messages=["这次资料还不够明确，我暂时不能下结论。"], memory=[], revision=cfg["revision"], read_through=read_through))
 
     @staticmethod
@@ -1059,18 +1091,25 @@ class Engine:
         if text in {"/音色 活泼", "/音色 自动"}:
             return "活泼版已停用，目前只使用日常音色。"
         if text in {"/游戏模式 自动 开", "/游戏模式 自动 关"}:
-            from game_mode import set_auto_detection
+            from game_mode import CHECK_INTERVAL, set_auto_detection
             outcome = set_auto_detection(text.endswith("开"))
             if outcome["denied"]:
                 return "设置已保存，但部分工作进程未能停止，请检查游戏模式状态。"
-            return "游戏自动检测已开启，每4秒检查终末地和无畏契约。手动开启会保留；手动关闭后本轮游戏不再自动开启。" if text.endswith("开") else "游戏自动检测已关闭，保留手动游戏模式。"
+            if text.endswith("开"):
+                return (f"游戏自动检测已开启，每{CHECK_INTERVAL}秒查看终末地和无畏契约的进程名。"
+                        "识别到游戏后，全部退出时自动恢复。")
+            return "游戏自动检测已关闭。此后可手动开启或关闭游戏模式。"
         if text in {"/游戏模式 开", "/游戏模式 关"}:
             from game_mode import set_game_mode
             enabled = text.endswith("开")
             outcome = set_game_mode(enabled, cfg)
             if outcome["denied"]:
                 return "游戏模式已开启，但部分语音、唱歌或桌宠工作进程未能关闭，请在任务管理器核对。文字聊天继续。"
-            return "游戏模式已开启，本地语音识别、合成、唱歌和桌宠已暂停，文字聊天继续；游戏退出不会关闭手动模式。" if enabled else "游戏模式已关闭，本轮游戏不再自动开启；语音恢复按需处理，合成服务不会自动常驻启动。"
+            if enabled:
+                hint = ("检测到游戏后，等支持的游戏全部退出会自动恢复。"
+                        if cfg.get("game_mode_auto") else "自动检测已关闭，可以手动结束游戏模式。")
+                return "游戏模式已开启。语音、唱歌和桌宠暂停，文字聊天继续。" + hint
+            return "游戏模式已关闭。若当前还有游戏运行，本轮会保持关闭。语音恢复按需处理。"
         if text == "/资料状态":
             return json.dumps(dict(enabled=cfg.get("autonomous_profile", False), profile=self.store.get(f"self_profile:{cfg['bot_qq']}", {})), ensure_ascii=False)
         if text == "/状态":

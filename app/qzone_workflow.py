@@ -177,6 +177,10 @@ class QzoneWorkflow:
             ):
                 continue
             seen.add(identity)
+            if any(str(c.uin) == cfg['bot_qq'] for c in post.comments):
+                responder = getattr(self.plugin, 'own_space', None)
+                if responder:
+                    responder.watch(post, cfg)
             seen_key = f"qzone_seen:{post.uin}:{post.tid}"
             already_seen = self.store.get(seen_key, False)
             self.store.set(seen_key, True)

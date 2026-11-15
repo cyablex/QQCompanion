@@ -1,3 +1,4 @@
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -238,6 +239,12 @@ def test_previous_chat_is_required_and_busy_recipient_is_excluded(env):
 @pytest.mark.asyncio
 async def test_three_for_same_friend_after_replies_and_explicit_two_still_wins(env):
     workflow, store, cfg, engine, now, sent, calls = env
+    topics = iter(['刚学会一种炒饭做法。', '你讲的故事让我想起一首歌。', '画里的鲸鱼尾巴终于画顺了。'])
+
+    async def generate(*args, **kwargs):
+        return json.dumps(dict(action='reply', messages=[next(topics)]), ensure_ascii=False), None
+
+    engine.generate = generate
     for index in range(3):
         store.incoming(f"answer-{index}", "33333", "继续聊", now - 3600)
         store.message("33333", "assistant", "好呀", now - 3599)

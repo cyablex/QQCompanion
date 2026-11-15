@@ -190,9 +190,18 @@ class QzoneAPI(QzoneHttpClient):
         post: Post,
         comment: Comment,
         content: str,
+        *,
+        comment_uin: int | None = None,
+        reply_uin: int | None = None,
+        reply_nick: str = '',
     ) -> ApiResponse:
         """回复指定评论"""
         ctx = await self.session.get_ctx()
+        if reply_uin is not None:
+            # Nested replies stay under the root comment, but address the
+            # nested author explicitly. commentUin identifies the root author.
+            nick = str(reply_nick).replace('{', '').replace('}', '').replace('\n', ' ')
+            content = f'@{{uin:{reply_uin},nick:{nick},who:1,auto:1}}' + content
         raw = await self.request(
             "POST",
             self.REPLY_URL,
@@ -213,7 +222,7 @@ class QzoneAPI(QzoneHttpClient):
                 "ref": "feeds",
                 "content": content,
                 "commentId": comment.tid,
-                "commentUin": comment.uin,
+                "commentUin": comment.uin if comment_uin is None else comment_uin,
                 "richval": "",  # 富文本内容
                 "richtype": "",  # 富文本类型
                 "private": "0",  # 是否私密评论

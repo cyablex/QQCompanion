@@ -83,6 +83,18 @@ class TurnActions:
                 result.append(dict(id=row["id"], draft=row["content"], expires=row["expires"]))
         return result
 
+    def explicit_offer_action(self, contact, engine, cfg, through):
+        if not contact.isdigit() or not cfg.get('singing_enabled', True):
+            return None
+        origin = self.origin(contact)
+        if not origin or origin['created'] != through:
+            return None
+        from song_offers import current, explicitly_accepts
+        offer = current(engine, contact, cfg, requester=origin['requester'], through=through)
+        if offer and explicitly_accepts(origin['latest'], origin['previous'], offer['title']):
+            return dict(type='song.accept', song_id=offer['song_id'])
+        return None
+
     def context(self, contact, engine):
         cfg = engine.config_reader()
         self.sync()
@@ -95,7 +107,8 @@ class TurnActions:
         pending = self.plugin.singing.selection_context(contact, requester, origin['created'] if origin else None)
         request = self.plugin.singing.latest_request(contact, requester)
         data = dict(tasks=rows, songs=self.plugin.singing.library.list()[:40],
-                    current_turn=dict(latest=origin.get('latest', origin['text'])[-2000:], batch=origin['text'][-4000:]) if origin else None,
+                    current_turn=dict(latest=origin.get('latest', origin['text'])[-2000:], batch=origin['text'][-4000:],
+                                      trigger=origin.get('trigger')) if origin else None,
                     pending={k: v for k, v in pending.items() if k in {"title", "artist", "stage"}},
                     song_request={k: request[k] for k in ("title", "artist", "state", "result", "progress")} if request else None,
                     approvals=self.approvals(contact, cfg),
@@ -184,6 +197,8 @@ class TurnActions:
         if not isinstance(obj, dict) or obj.get("action") not in {"reply", "skip"}:
             raise InvalidTurn("本轮回复类型无效。")
         tasks, messages = obj.get("tasks"), obj.get("messages")
+        if isinstance(tasks, list) and tasks and 'messages' not in obj:
+            messages = []
         chat = obj.get('chat_messages', [])
         if (not isinstance(chat, list) or len(chat) > 2 or any(not isinstance(m, str) for m in chat)
                 or sum(map(len, chat)) > 1200

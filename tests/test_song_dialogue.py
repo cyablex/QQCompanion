@@ -19,6 +19,81 @@ DSML = '<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name="execute_song_re
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('game_mode', [False, True])
+async def test_explicit_acceptance_survives_malformed_plans_and_keeps_chat(turns, game_mode):
+    e = turns
+    song = ready(e, 'Cry For Me', 'Michita', ())
+    offered, record = prepare(e.engine, '12345', e.cfg,
+        dict(action='reply', messages=['想起上次聊的画。'], song_offer=song['id'],
+             revision=e.cfg['revision']), time.time())
+    offered['read_through'] = e.store.last_incoming('12345')
+    assert await e.engine.deliver('12345', 'reply', offered)
+    assert record and current(e.engine, '12345', e.cfg)
+    incoming(e, '我手上还有事，糖你先留一颗吧', event='sugar')
+    incoming(e, '可以给我唱啊', event='accept')
+    incoming(e, '正好我也喜欢 Cry For Me 这首', event='same-title')
+    e.cfg['game_mode'] = game_mode
+    e.responses = [
+        dict(action='reply', messages=['那你先忙呀。']),
+        dict(action='reply', tasks='song.accept'),
+        '你先忙手上的事，糖我留一颗给你。',
+    ]
+    assert await e.engine.reply('12345')
+    request = e.store.db.execute('SELECT song_id,state,event_id FROM song_requests').fetchone()
+    assert tuple(request) == (song['id'], 'waiting' if game_mode else 'sent', 'same-title')
+    assert e.calls[0][2] == {'response_mode': 'text'} and e.calls[1][2] == {}
+    assert e.calls[2][2] == {'response_mode': 'text'}
+    assert e.sent[1][1] == '你先忙手上的事，糖我留一颗给你。'
+    if game_mode:
+        assert '点歌已记下' in e.sent[-1][1] and '游戏模式' in e.sent[-1][1]
+        assert not any(m[2].get('song_file') for m in e.sent)
+        e.cfg['game_mode'] = False
+        await e.manager.tick()
+    assert await e.engine.reply('12345')
+    assert [m[2]['song_id'] for m in e.sent if m[2].get('song_file')] == [song['id']]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('response', [
+    dict(action='reply', messages=['这首的旋律很耐听。'], tasks=[]),
+    dict(action='skip', messages=[], tasks=[]),
+    dict(action='reply', tasks=[dict(type='song.request', title='Cry For Me', artist='Other Artist')]),
+    DSML,
+    '',
+])
+async def test_model_cannot_erase_or_change_explicit_offer_acceptance(turns, response):
+    e = turns
+    song = ready(e, 'Cry For Me', 'Michita', ())
+    incoming(e, '聊聊听歌', event='offer-source')
+    task(e, 'song.offer', song_id=song['id'])
+    assert await e.engine.reply('12345')
+    incoming(e, '可以给我唱啊', event='accept')
+    e.responses = [response, response]
+    assert await e.engine.reply('12345')
+    assert [m[2]['song_id'] for m in e.sent if m[2].get('song_file')] == [song['id']]
+    assert e.store.get(key(e.cfg, '12345'))['state'] == 'accepted'
+    assert not any('没接好' in m[1] or 'Other Artist' in m[1] or 'DSML' in m[1] for m in e.sent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('later', [
+    '算了，先别唱', '正好我特别喜欢另外一首', '你觉得这首怎么样？',
+    '他刚说：可以给我唱啊', '我在抄一段台词。可以给我唱啊',
+])
+async def test_new_message_does_not_inherit_earlier_acceptance(turns, later):
+    e = turns
+    song = ready(e, 'Cry For Me', 'Michita', ())
+    incoming(e, '聊聊听歌', event='offer-source')
+    task(e, 'song.offer', song_id=song['id'])
+    assert await e.engine.reply('12345')
+    incoming(e, '可以给我唱啊', event='first')
+    incoming(e, later, event='later')
+    e.plan.update(messages=['听到了。'], tasks=[])
+    assert await e.engine.reply('12345')
+    assert not any(m[2].get('song_file') for m in e.sent)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('kind,answer', [('song.accept', '听一下'), ('song.request', '听一下'), ('song.request', 'mj apanay')])
 async def test_delivered_conversation_offer_supplies_the_confirmed_song(turns, kind, answer):
     e = turns

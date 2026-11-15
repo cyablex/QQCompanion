@@ -11,10 +11,12 @@ from pathlib import Path
 
 import psutil
 
+from process_snapshot import named_pids, named_processes
 from settings import ROOT, atomic_json, read_settings
 
 TTS_ROOT = ROOT.parent / "GPTSoVITS"
 GAMES = {"endfield.exe", "valorant-win64-shipping.exe"}
+CHECK_INTERVAL = 4
 _lock = threading.RLock()
 
 
@@ -66,17 +68,21 @@ def close_local_voice(tts_only=False):
     denied = []
     worker = (ROOT / "app/speech_worker.py").resolve()
     runtime = (ROOT / "runtime/python.exe").resolve()
-    for process in psutil.process_iter(["pid", "exe", "cmdline"]):
+    tts_dir = (TTS_ROOT / "app").resolve()
+    seed_runtime = (ROOT.parent / "SeedVC/.venv/Scripts/python.exe").resolve()
+    for process in named_processes({"python.exe", "pythonw.exe"}):
         selected = False
         try:
-            executable = Path(process.info["exe"] or "").resolve()
-            args = process.info["cmdline"] or []
+            executable = Path(process.exe()).resolve()
+            if executable not in {runtime, seed_runtime} and not executable.is_relative_to(tts_dir):
+                continue
+            args = process.cmdline()
             asr = executable == runtime and str(worker).casefold() in [str(arg).casefold() for arg in args]
-            tts = (executable.is_relative_to((TTS_ROOT / "app").resolve())
+            tts = (executable.is_relative_to(tts_dir)
                    and executable.name.lower() in {"python.exe", "pythonw.exe"}
-                   and any(Path(arg).is_absolute() and Path(arg).resolve().is_relative_to((TTS_ROOT / "app").resolve())
+                   and any(Path(arg).is_absolute() and Path(arg).resolve().is_relative_to(tts_dir)
                            and Path(arg).name.lower() in {"api_v2.py", "inference_webui.py"} for arg in args))
-            svc = (executable == (ROOT.parent / "SeedVC/.venv/Scripts/python.exe").resolve()
+            svc = (executable == seed_runtime
                    and any(Path(arg).resolve() in {(ROOT / "integrations/seedvc/companion_svc.py").resolve(), (ROOT.parent / "SeedVC/companion_svc.py").resolve(), (ROOT / "app/song_worker.py").resolve()} for arg in args)
                    and Path(process.cwd()).resolve() == (ROOT.parent / "SeedVC").resolve())
             if tts_only:
@@ -106,19 +112,21 @@ def close_local_voice(tts_only=False):
 
 def _apply(cfg, previous, *, enforce=False):
     enabled = cfg["game_mode"]
-    if enabled and (not previous.get("game_mode") or enforce):
+    was_enabled = bool(previous.get("game_mode"))
+    if enabled and (not was_enabled or enforce):
         cfg.update(voice_lazy=True, voice_demand_after=time.time())
     if cfg != previous:
-        cfg["revision"] = previous.get("revision", 0) + 1
+        if enabled != was_enabled or enforce or cfg.get("game_mode_auto") != previous.get("game_mode_auto"):
+            cfg["revision"] = previous.get("revision", 0) + 1
         atomic_json(ROOT / "config/user.json", cfg)
     import vpet_runtime
-    if enabled and (not previous.get("game_mode") or enforce):
+    if enabled and (not was_enabled or enforce):
         outcome = close_local_voice()
         pet = vpet_runtime.stop(ROOT)
         outcome = dict(stopped=outcome['stopped'] + pet['stopped'], denied=outcome['denied'] + pet['denied'])
         atomic_json(ROOT / "data/game-mode-release.json", dict(updated=time.time(), **outcome))
         return outcome
-    if previous.get("game_mode") and not enabled:
+    if was_enabled and not enabled:
         return vpet_runtime.reconcile(ROOT, cfg)
     return dict(stopped=[], denied=[])
 
@@ -126,14 +134,15 @@ def _apply(cfg, previous, *, enforce=False):
 def set_game_mode(enabled, cfg=None):
     with mode_lock():
         previous = dict(read_settings() if cfg is None or (ROOT / "config/user.json").exists() else cfg)
-        override = False
-        if not enabled and previous.get("game_mode_auto"):
+        active = detection_failed = False
+        if previous.get("game_mode_auto"):
             try:
-                override = bool(running_games())
-            except psutil.Error:
-                override = True
-        cfg = dict(previous, game_mode=bool(enabled), game_mode_manual=bool(enabled),
-                   game_mode_override=override)
+                active = bool(running_games())
+            except (OSError, psutil.Error):
+                active = bool(previous.get("game_mode_auto_active"))
+                detection_failed = True
+        cfg = dict(previous, game_mode=bool(enabled), game_mode_manual=bool(enabled and not active),
+                   game_mode_auto_active=active, game_mode_override=bool(not enabled and (active or detection_failed)))
         return _apply(cfg, previous, enforce=bool(enabled))
 
 
@@ -149,50 +158,48 @@ def set_auto_detection(enabled):
 
 
 def running_games():
-    found = set()
-    for process in psutil.process_iter(["name"]):
-        try:
-            name = process.info["name"]
-            if name is None:
-                name = process.name()  # Failure is unknown, never a false game exit.
-            if name.casefold() in GAMES:
-                found.add(name.casefold())
-        except psutil.NoSuchProcess:
-            continue
-    return found
+    return {name for _, name in named_pids(GAMES)}
 
 
 class GameMonitor:
     def __init__(self):
         self.first = True
+        self.last_status = None
+
+    def report(self, **status):
+        if status != self.last_status:
+            atomic_json(ROOT / "data/game-mode-monitor.json", dict(updated=time.time(), **status))
+            self.last_status = status
 
     def tick(self):
         with mode_lock():
             previous = read_settings()
-            games = running_games() if previous.get("game_mode_auto") else set()
+            auto = bool(previous.get("game_mode_auto"))
+            games = running_games() if auto else set()
             active = bool(games)
             manual = previous.get("game_mode_manual", bool(previous.get("game_mode")))
+            # An early manual start hands over to the detected game session.
+            if auto and (active or previous.get("game_mode_auto_active")):
+                manual = False
             override = bool(previous.get("game_mode_override")) and active
             cfg = dict(previous, game_mode_manual=manual, game_mode_auto_active=active,
                        game_mode_override=override, game_mode=bool(manual or (active and not override)))
             outcome = _apply(cfg, previous, enforce=self.first and cfg["game_mode"])
             self.first = False
-            atomic_json(ROOT / "data/game-mode-monitor.json", dict(
-                updated=time.time(), games=sorted(games), enabled=bool(cfg.get("game_mode_auto")),
-                game_mode=cfg["game_mode"], manual=manual, override=override, error=""))
+            self.report(games=sorted(games), enabled=auto, game_mode=cfg["game_mode"],
+                        manual=manual, override=override, error="")
             return outcome
 
     def tick_safely(self):
         try:
             return self.tick()
         except (OSError, ValueError, psutil.Error, TimeoutError) as exc:
-            atomic_json(ROOT / "data/game-mode-monitor.json", dict(
-                updated=time.time(), error=type(exc).__name__))
+            self.report(error=type(exc).__name__)
 
     def run(self, stop):
         while not stop.is_set():
             self.tick_safely()
-            stop.wait(4)
+            stop.wait(CHECK_INTERVAL)
 
 
 def status():

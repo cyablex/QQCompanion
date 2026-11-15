@@ -28,7 +28,14 @@ def test_switch_closes_only_owned_voice_inference_processes(tmp_path, monkeypatc
     class Process:
         def __init__(self, pid, executable, arguments):
             self.pid = pid
-            self.info = dict(pid=pid, exe=str(executable), cmdline=list(map(str, arguments)))
+            self.executable = str(executable)
+            self.arguments = list(map(str, arguments))
+
+        def exe(self):
+            return self.executable
+
+        def cmdline(self):
+            return self.arguments
 
         def terminate(self):
             stopped.append(self.pid)
@@ -56,7 +63,8 @@ def test_switch_closes_only_owned_voice_inference_processes(tmp_path, monkeypatc
         Process(11, tmp_path / "python.exe", [tmp_path / "other/song_worker.py"]),
         Process(12, tts / "app/bundle/runtime/python.exe", [tmp_path / "other/api_v2.py"]),
     ]
-    monkeypatch.setattr(game_mode.psutil, "process_iter", lambda attrs: processes)
+    monkeypatch.setattr(game_mode, "named_processes", lambda names: [
+        process for process in processes if Path(process.exe()).name.casefold() in names])
     expected = [2] if tts_only else [1, 2, 8, 10]
     assert game_mode.close_local_voice(tts_only=tts_only) == dict(stopped=expected, denied=[])
     assert stopped == expected

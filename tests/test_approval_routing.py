@@ -54,7 +54,7 @@ def test_quotes_questions_and_normal_chat_are_not_commands(text):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('variant', ['plain', 'slash', 'fullwidth', 'bad', 'comment'])
+@pytest.mark.parametrize('variant', ['plain', 'slash', 'fullwidth', 'bad', 'comment', 'comment_receipt'])
 async def test_actual_receive_routes_named_approval_without_model(posting, monkeypatch, variant):
     e = posting
     monkeypatch.setenv('QQCOMPANION_ROOT', str(e.root))
@@ -71,7 +71,7 @@ async def test_actual_receive_routes_named_approval_without_model(posting, monke
 
     async def comment(contact, text, **kwargs):
         comments.append(text)
-        return '评论已收到'
+        return '' if variant == 'comment_receipt' else '评论已收到'
 
     plugin = module.QQCompanion.__new__(module.QQCompanion)
     plugin.store, plugin.autopost = e.store, e.poster
@@ -80,7 +80,7 @@ async def test_actual_receive_routes_named_approval_without_model(posting, monke
     plugin.social = SimpleNamespace(approval_command=comment)
     text = {'plain': '同意动态 ' + token, 'slash': '/同意动态 ' + token,
             'fullwidth': '／同意动态 ' + token.upper() + '。', 'bad': '同意动态 xyz',
-            'comment': '同意评论 ABCDE123'}[variant]
+            'comment': '同意评论 ABCDE123', 'comment_receipt': '拒绝评论 ABCDE123'}[variant]
     raw = dict(self_id=67890, post_type='message', message_type='private', user_id=12345,
                message_id=10, time=int(e.clock[0]), message=[dict(type='text', data=dict(text=text))])
     event = SimpleNamespace(message_obj=SimpleNamespace(raw_message=raw), bot=object(),
@@ -89,8 +89,8 @@ async def test_actual_receive_routes_named_approval_without_model(posting, monke
     # would fail the real handler test, rather than silently pass a parser test.
     await plugin.receive(event)
     assert e.poster.drafts.rows(e.cfg)[0]['state'] == ('approved' if variant in {'plain', 'slash', 'fullwidth'} else 'pending')
-    assert len(replies) == 1
-    assert comments == (['/同意评论 abcde123'] if variant == 'comment' else [])
+    assert len(replies) == (0 if variant == 'comment_receipt' else 1)
+    assert comments == {'comment': ['/同意评论 abcde123'], 'comment_receipt': ['/拒绝评论 abcde123']}.get(variant, [])
     assert not e.writes
     if variant in {'plain', 'slash', 'fullwidth'}:
         await e.poster.resume()

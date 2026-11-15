@@ -6,6 +6,7 @@ import socket
 import subprocess
 
 import psutil
+from process_snapshot import named_processes
 from settings import ROOT
 
 SCRIPTS = {
@@ -36,10 +37,10 @@ def qq_webui_running():
 
 def matching():
     result = {}
-    exe = str(ROOT / "runtime/python.exe").lower()
-    for process in psutil.process_iter(["pid", "exe"]):
+    exe = ROOT / "runtime/python.exe"
+    for process in named_processes({exe.name}):
         try:
-            if str(process.info["exe"]).lower() != exe.replace("/", "\\"):
+            if process.exe().replace("\\", "/").casefold() != exe.as_posix().casefold():
                 continue
             args = [a.replace("\\", "/").lower() for a in process.cmdline()]
             for name, script in SCRIPTS.items():

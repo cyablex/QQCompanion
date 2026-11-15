@@ -104,7 +104,7 @@ class QQCompanion(Star):
             # This relay accepts JSON mode but can still return ordinary prose.
             system += (
                 "\n本轮是程序内部决策任务。只输出一个有效JSON对象，保留上面要求的字段，"
-                'action只能是reply或skip。没有合适内容时输出{"action":"skip","messages":[],"memory":[]}。'
+                "按本轮协议选择回复类型，并保留要求的空列表。"
                 "不要转为回答历史用户的问题，不要Markdown或任何JSON之外的文字。"
             )
         from astrbot.core.agent.message import (
@@ -445,6 +445,8 @@ class QQCompanion(Star):
         draft_reply = await dispatch_approval(self, contact, text,
             source=source_key(cfg['bot_qq'], contact, raw), source_time=raw.get('time') or time.time())
         if draft_reply is not None:
+            if not draft_reply:
+                return  # The approval workflow already owns its acknowledgement.
             if contact == cfg['owner_qq']:
                 await self.send_private(contact, draft_reply)
             else:
@@ -565,6 +567,11 @@ class QQCompanion(Star):
                 if self.bot and cfg['live'] and not cfg['paused'] and self.reply_queue.ready():
                     await self.check_messaging()
                     self.resume_replies()
+                space = getattr(self, 'own_space', None)
+                if (self.bot and cfg['live'] and not cfg['paused'] and space
+                        and (space.due(cfg) or self.store.get('own_space_probe_requested', False))
+                        and (not self.own_space_task or self.own_space_task.done())):
+                    self.own_space_task = asyncio.create_task(self.check_own_space())
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -586,7 +593,6 @@ class QQCompanion(Star):
         next_own_post = time.time() + random.randint(10, 30) * 60
         next_offline = 0
         was_connected = False
-        next_own_space = 0
         next_activity = time.time() + 90
         next_memory = time.time() + 30
         next_expression = time.time() + 15
@@ -605,6 +611,10 @@ class QQCompanion(Star):
                         connected = False
                 else:
                     connected = False
+                just_connected = connected and not was_connected
+                was_connected = connected
+                if just_connected:
+                    self.own_space.on_online(read_settings())
                 atomic_json(
                     ROOT / "data/health.json",
                     {
@@ -634,7 +644,6 @@ class QQCompanion(Star):
                 )
                 if not connected:
                     next_offline = 0
-                    next_own_space = 0
                 if connected:
                     self.resume_replies()
                     if time.time() >= next_expression:
@@ -647,18 +656,10 @@ class QQCompanion(Star):
                             )
                     await billing.sync(read_settings())
                     await self.groups.probe()
-                if connected and time.time() >= next_own_space:
-                    next_own_space = time.time() + 1800
-                    if not self.own_space_task or self.own_space_task.done():
-                        self.own_space_task = asyncio.create_task(
-                            self.check_own_space()
-                        )
-                if connected and (not was_connected or time.time() >= next_offline):
+                if connected and (just_connected or time.time() >= next_offline):
                     next_offline = time.time() + 300
                     if not self.offline_task or self.offline_task.done():
                         self.offline_task = asyncio.create_task(self.recover_offline())
-                just_connected = connected and not was_connected
-                was_connected = connected
                 outreach_cfg = read_settings()
                 if connected and assessment_due(
                     self.store, outreach_cfg, "owner", time.time(), just_connected
@@ -795,10 +796,13 @@ class QQCompanion(Star):
         self.store.set("own_space_probe_requested", False)
         try:
             await self.own_space.run(read_only=bool(probe), scheduled=not probe)
+            self.store.set('own_space_error', '')
+            self.store.set(f"space_retry_after:{read_settings()['bot_qq']}", 0)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             self.store.set("own_space_error", type(exc).__name__)
+            self.store.set(f"space_retry_after:{read_settings()['bot_qq']}", time.time() + 60)
 
     async def terminate(self):
         if getattr(self, 'vpet', None):

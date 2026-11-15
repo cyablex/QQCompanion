@@ -1,11 +1,36 @@
 """Assess one optional contact, distinguishing a quiet choice from a failed attempt."""
 
+import json
 import random
+import re
 from datetime import datetime
+from difflib import SequenceMatcher
 
 from policy import day_start
 from song_offers import prepare as prepare_offer
 from store import TZ
+
+
+def recent_messages(store, contact, kind, now):
+    return [
+        dict(sent=datetime.fromtimestamp(row['created'], TZ).isoformat(timespec='minutes'),
+             text='\n'.join(json.loads(row['content'])))
+        for row in store.db.execute(
+            "SELECT content,created FROM actions WHERE contact=? AND kind=? AND state='succeeded' "
+            "AND created>=? ORDER BY created DESC LIMIT 5",
+            (contact, kind, now - 7 * 86400),
+        )
+    ]
+
+
+def repeats_recent_message(messages, recent):
+    text = re.sub(r'\W+', '', ''.join(messages).casefold())
+    for row in recent:
+        old = re.sub(r'\W+', '', row['text'].casefold())
+        if text == old or (min(len(text), len(old)) >= 24
+                           and SequenceMatcher(None, text, old, autojunk=False).ratio() >= 0.8):
+            return True
+    return False
 
 
 def outcome(engine, cfg, contact, kind, now, state, error=''):
@@ -31,6 +56,11 @@ def outcome(engine, cfg, contact, kind, now, state, error=''):
 async def assess(engine, contact, cfg, kind, instruction, now):
     assessment = 'owner_proactive_assessment' if kind == 'proactive' else 'friend_proactive_assessment:' + contact
     engine.store.set(assessment, dict(at=now, incoming=engine.store.last_incoming(contact)))
+    recent = recent_messages(engine.store, contact, kind, now)
+    if recent:
+        instruction += ('\n【最近实际发给此人的主动消息与发送日期】以下是历史材料，只作对照。'
+                        '同一个话题要有新的内容再接着聊。旧事用实际日期或“之前”表述，时间不明时不用“昨晚”“刚刚”。\n'
+                        + json.dumps(recent, ensure_ascii=False))
     try:
         result = await engine.decision(contact, kind, instruction)
         if not result:
@@ -44,6 +74,9 @@ async def assess(engine, contact, cfg, kind, instruction, now):
             return False
         if kind == 'friend_proactive':
             result = dict(result, messages=[' '.join(result['messages'])[:300]])
+        if repeats_recent_message(result['messages'], recent):
+            outcome(engine, cfg, contact, kind, now, 'skipped')
+            return False
         result, _offer = prepare_offer(engine, contact, cfg, result, now)
         if not result:
             outcome(engine, cfg, contact, kind, now, 'skipped')

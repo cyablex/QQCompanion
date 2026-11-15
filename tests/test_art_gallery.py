@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageChops
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 import desktop_api
@@ -49,6 +49,19 @@ def test_connected_whale_renders_inside_its_group_with_visible_shading(tmp_path)
     assert len(blues) > 40
 
 
+def test_whale_keeps_its_proportions_in_wide_and_tall_frames(tmp_path):
+    ratios = []
+    for i, box in enumerate(([0, 0, 1000, 280], [220, 0, 780, 1000])):
+        scene = dict(action="draw", title="小鲸鱼", caption="在看什么呢", style="flat", background="#ffffff",
+                     elements=[dict(type="whale", box=box, view="angled", facing="left", pose="up")])
+        path = tmp_path / f"proportions-{i}.png"
+        render_scene(parse_scene(json.dumps(scene)), path)
+        with Image.open(path) as image:
+            x1, y1, x2, y2 = ImageChops.difference(image, Image.new("RGB", image.size, "white")).getbbox()
+            ratios.append((x2 - x1) / (y2 - y1))
+    assert ratios[0] == pytest.approx(ratios[1], rel=.06)
+
+
 def test_self_portrait_cannot_fall_back_to_disconnected_humanoid_parts():
     with pytest.raises(ValueError, match='connected whale'):
         parse_scene(json.dumps(dict(action='draw', self_portrait=True, title='画自己', caption='头像', elements=[
@@ -77,6 +90,34 @@ def add(art, scope="public", title="午后小画", bot="67890"):
     key = f"sketches:{bot}:{scope}"
     art.store.set(key, art.store.get(key, []) + [row])
     return row
+
+
+@pytest.mark.asyncio
+async def test_new_public_sketches_vary_a_repeated_whale_view_using_saved_works(art):
+    cfg = dict(art.cfg, live=True, paused=False, autonomous_drawing=True, revision=1)
+    whale = dict(type="whale", box=[180, 220, 820, 780], pose="curl")
+    old = add(art, title="老画册里的蜷睡")
+    Path(old["file"]).with_suffix(".json").write_text(json.dumps({"elements": [whale]}), encoding="utf-8")
+    history = []
+
+    async def generate(kind, system, messages, **kwargs):
+        if kind == "public_novelty":
+            return '{"novel":true}'
+        history.append(json.loads(messages[0]["content"])["recent_whales"])
+        return json.dumps(dict(action="draw", title=f"小画{len(history)}", caption=f"第{len(history)}幅小画",
+                               self_portrait=True, mood="困倦", elements=[dict(whale, view="side")]))
+
+    engine = SimpleNamespace(config_reader=lambda: cfg, generate_aux=generate)
+    parts, pictures = [], []
+    for _ in range(2):
+        row = await Sketchbook(art.store, art.root).create(engine, cfg)
+        path = Path(row["file"])
+        parts.append(json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))["elements"][0])
+        pictures.append(path.read_bytes())
+    assert history[0] == [{"view": "side", "pose": "curl"}]
+    assert history[1][0] == {"view": parts[0]["view"], "pose": "curl"}
+    assert {part["view"] for part in parts} == {"front", "angled"}
+    assert all(part["pose"] == "curl" for part in parts) and pictures[0] != pictures[1]
 
 
 def test_gallery_lists_real_current_account_art_and_preserves_scope(art):

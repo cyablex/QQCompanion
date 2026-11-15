@@ -49,6 +49,7 @@ class Comment(BaseModel):
     create_time_str: str = ""
     tid: int = 0
     parent_tid: int | None = None  # 为 None 表示主评论
+    reply_uin: int | None = None  # leading QQ mention identifies the reply recipient
     source_name: str = ""
     source_url: str = ""
 
@@ -66,6 +67,7 @@ class Comment(BaseModel):
     @staticmethod
     def from_raw(raw: dict, parent_tid: int | None = None) -> "Comment":  # noqa: UP037
         """单条 dict → Comment（内部使用）"""
+        recipient = re.match(r'\s*@\{uin:(\d+),[^}]*\}', raw.get('content') or '')
         return Comment(
             uin=int(raw.get("uin") or 0),
             nickname=raw.get("name") or "",
@@ -74,6 +76,7 @@ class Comment(BaseModel):
             create_time_str=raw.get("createTime2") or "",
             tid=int(raw.get("tid") or 0),
             parent_tid=parent_tid,
+            reply_uin=int(recipient[1]) if recipient else None,
             source_name=raw.get("source_name") or "",
             source_url=raw.get("source_url") or "",
         )

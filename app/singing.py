@@ -125,7 +125,8 @@ class Singing:
             if message["role"] != "user" or message["created"] < row["created"] - 900:
                 break
             block.append(message["text"])
-        return dict(event_id=row["id"], text="\n".join(reversed(block)) or row["text"], latest=row["text"], requester=contact, created=row["created"])
+        return dict(event_id=row["id"], text="\n".join(reversed(block)) or row["text"], latest=row["text"],
+                    previous=block[1] if len(block) >= 2 else '', requester=contact, created=row["created"])
 
     async def say(self, contact, text, key, engine, source_event=None, invitation=None):
         cfg = self.config()

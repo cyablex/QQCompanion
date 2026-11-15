@@ -425,6 +425,12 @@ async def test_friend_two_in_day_is_reachable_after_replies_but_third_denied(
     workflow = FriendProactive(
         SimpleNamespace(store=env.store, engine=env.engine, workers={})
     )
+    topics = iter(['我想到让那只鲸鱼在码头找到朋友。', '后来觉得把结尾放在灯塔会更合适。'])
+
+    async def generate(*args, **kwargs):
+        return json.dumps(dict(action='reply', messages=[next(topics)]), ensure_ascii=False), None
+
+    monkeypatch.setattr(env.engine, 'generate', generate)
 
     def exchange(index, when):
         clock[0] = when
