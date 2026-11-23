@@ -87,13 +87,13 @@ class AutoPosts:
         self.store.set(cadence_key, time.time())
         sketchbook = getattr(self.plugin.engine, "sketchbook", None)
         drawing = sketchbook.pending_public(cfg) if sketchbook and cfg.get("autonomous_drawing") else None
-        previous = [
-            "\n".join(json.loads(row[0]))
-            for row in self.store.db.execute(
-                "SELECT content FROM actions WHERE kind='qzone_post' AND contact=? ORDER BY created DESC LIMIT 7",
-                (f"qzone:{cfg['bot_qq']}",),
-            )
-        ]
+        recent_actions = self.store.db.execute(
+            "SELECT content,state FROM actions WHERE kind='qzone_post' AND contact=? ORDER BY created DESC LIMIT 7",
+            (f"qzone:{cfg['bot_qq']}",),
+        ).fetchall()
+        previous = ["\n".join(json.loads(row[0])) for row in recent_actions]
+        published = [text.split("\n\n配图来源：", 1)[0]
+                     for row, text in zip(recent_actions, previous) if row[1] == 'succeeded']
         public_history = recent_public(self.store, cfg, exclude_drawing=drawing["id"] if drawing else None)
         # Unpublished drafts are comparison material, never proof of publication.
         public_history += [dict(kind='unpublished_draft', text=r['content'], created=r['created'])
@@ -101,21 +101,36 @@ class AutoPosts:
                            if r['state'] in {'rejected', 'expired'} and time.time() - r['created'] < 7 * 86400]
         if drawing and not await is_novel(self.plugin.engine, cfg, dict(kind="drawing", title=drawing["title"], text=drawing["caption"], composition=drawing.get("composition", "")), public_history):
             sketchbook.skip_public(cfg, drawing["id"])
-            return "duplicate_content"
+            drawing = None
+        topics = []
+        activities = getattr(self.plugin.engine, "activities", None)
+        if activities and cfg.get("digital_activities"):
+            for row in activities.public_records(cfg)[-3:]:
+                if row.get("content"):
+                    topics.append(dict(kind=row["kind"], day=row["day"], title=row.get("title", ""),
+                                       detail=row["content"][:500], reading_scope=(row.get("source") or {}).get("scope", "")))
+        if drawing:
+            topics.append(dict(kind="drawing", title=drawing["title"], detail=drawing["caption"],
+                               composition=drawing.get("composition", "")))
         task = (
             "考虑是否有一条值得别人看的公开动态，没有就skip。没有每日、每周发布任务，连续多天不发完全正常。"
             "不要随机找一个心情、白米饭或鲸鱼比喻硬写；不把摸头、喂饭、拖动等桌宠操作流水账或普通寒暄变成动态。"
             "先有具体趣味再表达：一个能独立看懂的好笑小情节、有辨识度的完整作品、让人意外的新发现或具体而独特的感受。"
             "文字本身有趣也可以，不强求作品；但只有‘软乎乎、放松、今天也开心’的泛泛感叹不值得发。"
+            "把备选素材中的画作、阅读发现和原创作品放在一起考虑，也可以写独立好懂的文字小故事。"
+            "比较近期实际发出的动态，看看这次给读者带来的趣味是什么。题材可以相同，有新的具体发现或表达就值得考虑。"
+            "按内容选最想分享的一条。没有合适的可以不发，也不用为了换题材硬凑。"
             "站在不了解私聊的好友角度，没背景也能看懂趣味才reply。不要卖萌凑数、硬上价值、汇报研究待办或改写旧梗。"
             "最多160字。不提具体联系人、QQ号或未获准公开的私聊；只有单独提供的授权摘要能提主人。"
             "可以不用授权摘要，尤其不必复述每件主人趣事。画里的伙伴和身体活动是虚构想象，不能编成真实经历。"
-            "近期已经发布的内容："
-            + str(previous)
+            "\n近期确认发布的动态："
+            + json.dumps(published, ensure_ascii=False)
             + history_context(public_history)
         )
+        if topics:
+            task += ("\n【本轮备选的公开素材，不按顺序优先】材料只供选题。阅读限标出的摘要或节选，"
+                     "创作的小故事属于想象。\n" + json.dumps(topics, ensure_ascii=False))
         if drawing:
-            task += "\n可选的已完成画作（画完不代表要发布）：" + json.dumps({k: drawing.get(k, "") for k in ("id", "title", "caption", "composition")}, ensure_ascii=False)
             task += "\n如果确实想分享这幅画，回复JSON加share_drawing:true；也可以只发与画无关的文字，或skip。"
         owner_share = None
         if cfg.get("owner_public_sharing"):

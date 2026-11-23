@@ -204,7 +204,9 @@ class ChatPromptBuilder:
                     else "\n".join(text[:300] for text in recent_users[:2])
                 )
                 dynamic_context += self.memory.context(contact, query)
-        if cfg.get("digital_activities", False):
+        # The post planner supplies an explicit set of public topic candidates.
+        planning_post = public and kind == "qzone_post"
+        if cfg.get("digital_activities", False) and not planning_post:
             recipient_topics = (
                 "\n".join(m["content"] for m in history[-12:] if m["role"] == "user")
                 if outreach
@@ -226,9 +228,10 @@ class ChatPromptBuilder:
                 or re.search(r"画|作品|图|drawing|picture", activity_query, re.I)
             )
         )
-        dynamic_context += self.sketchbook.context(
-            contact, cfg, public=public, private_only=not art_relevant
-        )
+        if not planning_post:
+            dynamic_context += self.sketchbook.context(
+                contact, cfg, public=public, private_only=not art_relevant
+            )
         profile = self.store.get(f"self_profile:{cfg['bot_qq']}", {})
         confirmed_profile = {
             k: profile[k] for k in ("status", "signature") if k in profile

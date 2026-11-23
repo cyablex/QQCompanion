@@ -93,19 +93,45 @@ async def test_repeated_public_drawing_never_renders_or_requests_post(env):
 
 
 @pytest.mark.asyncio
-async def test_queued_legacy_drawing_cannot_bypass_post_check_or_retry_on_restart(env):
+@pytest.mark.parametrize("share_text", [False, True])
+async def test_repeated_drawing_still_allows_other_topics_and_preserves_cooldown(env, share_text):
     cfg, store, engine, plugin, prompts, writes, _ = env
+    cfg.update(digital_activities=True, post_image_probability=0)
     image = engine.sketchbook.folder(cfg) / "legacy.png"
     image.parent.mkdir(parents=True)
     Image.new("RGB", (10, 10)).save(image)
     row = dict(id="legacy", title="鲸尾指纹", caption=REPEAT, file=str(image), created=time.time())
     store.set(engine.sketchbook.key(cfg), [row])
-    assert await autopost.AutoPosts(plugin).run(force=True) == "duplicate_content"
-    assert not writes and len(prompts) == 1
+    activity = dict(id="reading", day="2026-11-23", title="章鱼的吸盘", kind="reading_note",
+                    content="章鱼不用把东西送进嘴里，吸盘贴上去就能尝出味道。",
+                    origin="independent_public_activity", public_safe=True, status="completed",
+                    source={"scope": "文章节选"})
+    engine.activities.library.save(cfg, activity)
+
+    async def generate(system, contexts, **kwargs):
+        prompts.append((system, contexts))
+        if "判断自主公开表达" in system:
+            return json.dumps(dict(novel=json.loads(contexts[0]["content"])["candidate"]["kind"] != "drawing")), None
+        if "判断这条QQ空间草稿" in system:
+            return '{"worthy":true,"reason":"有具体发现"}', None
+        assert activity["content"] in contexts[-1]["content"]
+        assert "share_drawing:true" not in contexts[-1]["content"]
+        return json.dumps(dict(action="reply", messages=[activity["content"]]) if share_text else dict(action="skip")), None
+
+    engine.generate = generate
+    poster = autopost.AutoPosts(plugin)
+    assert await poster.run(force=True) == ("draft_created" if share_text else "no_content")
+    draft = poster.drafts.active(cfg)
+    if share_text:
+        assert draft["content"] == activity["content"]
+        assert json.loads(draft["payload"])["drawing_id"] is None
+    else:
+        assert draft is None
+    assert not writes
     engine.sketchbook = Sketchbook(store, engine.sketchbook.root)
     assert engine.sketchbook.pending_public(cfg) is None
-    assert await autopost.AutoPosts(plugin).run() == "waiting"
-    assert len(prompts) == 1
+    assert await autopost.AutoPosts(plugin).run() == ("pending_review" if share_text else "waiting")
+    assert len(prompts) == (4 if share_text else 2)
     assert not store.db.execute("SELECT 1 FROM actions WHERE id LIKE 'qzone_post:%'").fetchone()
 
 
